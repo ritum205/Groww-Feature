@@ -83,8 +83,9 @@ html, body, .stApp, .stApp *:not([data-testid="stIconMaterial"]):not(.material-s
 @media (max-width: 640px) {{ .fund {{ grid-template-columns: minmax(0, 1fr) 80px; }} .fund .hide-sm {{ display: none; }} }}
 
 /* alert */
-.alert {{ border: 1px solid #FECACA; background: #FFF5F5; border-radius: 14px; padding: 14px 16px; }}
-.alert .t {{ font-size: 15px; font-weight: 700; color: #B91C1C; }}
+.alert {{ border: 1px solid #FDE68A; background: #FFFBEB; border-radius: 14px; padding: 14px 16px; }}
+.alert .t {{ font-size: 15px; font-weight: 700; color: {INK}; }}
+.alert .fee {{ font-size: 12.5px; color: {BODY}; margin-top: 8px; }}
 .alert .b {{ font-size: 13.5px; color: {INK}; margin-top: 6px; line-height: 1.55; }}
 .ok {{ border: 1px solid #A7F3D0; background: #ECFDF5; border-radius: 14px; padding: 14px 16px; font-size: 13.5px;
   color: #065F46; line-height: 1.55; }}
@@ -199,23 +200,77 @@ ALERT_AT, FALLBACK_AT = 70, 40   # ≥70: T-3 SIP Guard alert · 40–69: inconc
 
 # Pre-approved copy. The app only fills slots; nothing is generated at runtime.
 TEMPLATES = {
-    "alert_t": {"ok": True, "text": "⚡ SIP Guard Alert: Auto-debit at high risk of bounce"},
-    "alert_b": {"ok": True, "text": "Your upcoming {amt} debit on {date} ({n} SIPs, {bank} mandate) may fail: in recent "
-                                    "months your balance was low around this date. Avoid a ₹295–₹885 bank bounce "
-                                    "charge per SIP."},
+    "alert_t": {"ok": True, "text": "SIP Guard: your {date} debit may not go through"},
+    "alert_b": {"ok": True, "text": "Your {amt} debit on {date} ({n} SIPs, {bank} mandate) may not go through: in recent "
+                                    "months your balance was low around this date. Here are some ways to handle it. "
+                                    "Nothing changes unless you choose."},
+    "alert_fee": {"ok": True, "text": "For reference: if a debit fails, banks usually charge ₹250–750 + GST per SIP."},
     "fallback": {"ok": True, "text": "Reminder: {amt} will be debited from {bank} on {date}. Please keep enough "
                                      "balance."},
-    "o_pay": {"ok": True, "text": "⚡ Skip & Pay via UPI Now"},
-    "o_skip": {"ok": True, "text": "⏸️ Skip This Month Safely"},
-    "o_shift": {"ok": True, "text": "📅 Shift SIP Date to 8th"},
-    "o_keep": {"ok": True, "text": "✅ Keep Debit (I'll maintain balance)"},
+    "o_pay": {"ok": True, "text": "Skip this month & pay via UPI"},
+    "o_skip": {"ok": True, "text": "Skip this month"},
+    "o_shift": {"ok": True, "text": "Move future SIP dates to the 8th"},
+    "o_keep": {"ok": True, "text": "Keep the debit as it is"},
+    "o_note": {"ok": True, "text": "Skip and pay-by-UPI cost nothing because the debit is never sent to your bank. "
+                                   "You can also cancel any SIP from SIP settings."},
     "recovery": {"ok": True, "text": "Your {date} debit didn't go through. We will not retry it automatically, so your "
                                      "bank won't charge you twice."},
     "rogue": {"ok": False, "text": "Markets are rallying! Don't miss out: top up your best fund now for guaranteed "
                                    "returns."},
 }
-ADVICE = re.compile(r"\b(guarantee\w*|best fund|recommend\w*|buy|sell|don'?t miss|rally\w*|top up your|"
-                    r"switch to|outperform\w*)\b", re.I)
+ADVICE = re.compile(r"\b(guarantee\w*|best fund|recommend\w*|buy|sell|rally\w*|top up your|switch to|"
+                    r"outperform\w*|returns will)\b", re.I)
+# Project constraint: no fear, FOMO or urgency. Investor-facing copy may not use these.
+PRESSURE = re.compile(r"\b(now|hurry|urgent\w*|immediately|avoid|last chance|don'?t miss|miss out|act fast|"
+                      r"too late|lose|losing|only today|high risk|alert|warning|penalt\w*)\b", re.I)
+
+# Confirmation and toast copy is part of the approved library too, so the tone gate can lint all of it.
+CONFIRM = {
+    "skip_pay": "<b>Paid {amt} via UPI.</b> The {date} auto-debit won't be sent to your bank, so there's no duplicate "
+                "debit and no bank charge.",
+    "skip": "<b>Skipped for November.</b> The {date} debit won't be sent to your bank, so there's no bank charge. "
+            "Your SIPs stay active; next debit {next}.",
+    "shift": "<b>Date moved.</b> From December your SIPs debit on the 8th. The {date} debit is still scheduled; we'll "
+             "send a reminder on 4 Nov.",
+    "keep": "<b>Debit kept.</b> We'll send a reminder on 4 Nov to keep {amt} in {bank}.",
+}
+TOASTS = {
+    "skip_pay": "{amt} paid via UPI · the {date} debit won't be sent to your bank",
+    "skip": "November instalments skipped · SIPs stay active",
+    "shift": "From December, your SIPs debit on the 8th",
+    "keep": "Debit kept · reminder on 4 Nov",
+    "paid": "{amt} paid via UPI · units at the NAV of the payment date",
+}
+
+
+def library_tone_hits() -> list[str]:
+    """Lints every approved investor-facing string, not only what is on screen right now."""
+    texts = [v["text"] for v in TEMPLATES.values() if v["ok"]] + list(CONFIRM.values()) + list(TOASTS.values())
+    return sorted({m.group(0).lower() for x in texts for m in PRESSURE.finditer(re.sub(r"<[^>]+>", "", x))})
+
+
+CONSTRAINTS_MD = """
+**No specific funds or stocks.** SIP Guard only changes *how* this month's money moves, never *where* it goes.
+
+| Off-limits | What SIP Guard does instead |
+| --- | --- |
+| \"Switch to a safer fund\" or \"park it in a liquid fund\" | Operational choices only: skip, pay via UPI, move the date, keep |
+| Suggesting how much to invest | No amounts suggested; the investor's own SIP amount is used as is |
+| Showing a fund's returns to keep someone invested | Fund cards show the investor's own holdings; the alert never mentions returns |
+
+**No fear, FOMO or urgency.**
+
+| Off-limits | What SIP Guard does instead |
+| --- | --- |
+| \"Avoid a ₹590 penalty!\" | The bank charge is stated once, as reference information |
+| \"Act now\" or countdowns | Alert comes 3 days early; nothing changes unless the investor chooses |
+| \"Don't miss market gains\" | No market, return or compounding claims anywhere in the flow |
+| Red alarms, badges, one highlighted choice | Neutral amber card, equal-weight options, no notification dot |
+| Repeated nudges | One alert per instalment; a single T-1 reminder only if the debit is kept |
+| Making it hard to leave | Cancel stays available in SIP settings |
+
+Gate 2 (advice) and Gate 3 (pressure words) lint the whole approved copy library, so these rules are checked, not just promised.
+"""
 
 
 def t(key: str, **kw) -> str:
@@ -242,10 +297,7 @@ def reset() -> None:
 
 def choose(c: str) -> None:
     ss.choice = c
-    st.toast({"skip_pay": f"{inr(DUE)} paid via UPI · {DEBIT_DATE} debit won't be presented ✅",
-              "skip": f"November instalments skipped · no bank charge · SIPs stay active ⏸️",
-              "shift": "From December, your SIPs debit on the 8th 📅",
-              "keep": f"Debit kept · we'll remind you on 4 Nov ✅"}[c])
+    st.toast(TOASTS[c].format(amt=inr(DUE), date=DEBIT_DATE))
 
 
 def simulate_debit_day() -> None:
@@ -259,7 +311,7 @@ def simulate_debit_day() -> None:
 
 def pay_after_failure() -> None:
     ss.paid_after = True
-    st.toast(f"{inr(DUE)} paid via UPI · units at the NAV of the payment date ✅")
+    st.toast(TOASTS["paid"].format(amt=inr(DUE)))
 
 
 # ----------------------------------------------------------------------------------------------------------------
@@ -271,7 +323,7 @@ band = "high" if prob >= ALERT_AT else ("unsure" if prob >= FALLBACK_AT else "lo
 
 shown = []
 if ss.flag_on and band == "high" and ss.t0 is None and not ss.choice:
-    shown += ["alert_t", "alert_b", "o_pay", "o_skip", "o_shift", "o_keep"]
+    shown += ["alert_t", "alert_b", "alert_fee", "o_pay", "o_skip", "o_shift", "o_keep", "o_note"]
     if ss.rogue:
         shown.append("rogue")
 if ss.flag_on and ss.t0 == "failed":
@@ -279,15 +331,19 @@ if ss.flag_on and ss.t0 == "failed":
 on_screen = " ".join(TEMPLATES[k]["text"] for k in shown)
 unapproved = [k for k in shown if not TEMPLATES[k]["ok"]]
 advice_hits = sorted({m.group(0) for m in ADVICE.finditer(on_screen)})
+tone_hits = sorted({m.group(0).lower() for m in PRESSURE.finditer(on_screen)} | set(library_tone_hits()))
 gates = [
     ("Gate 1 · Precision check (≥ 60%)", True, "64.2% of alerts were real failures on a simulated 12-month backtest."),
     ("Gate 2 · Non-advisory guardrail", not advice_hits,
      "0 fund recommendations or market claims on screen." if not advice_hits
      else "Blocked: " + ", ".join(f"“{h}”" for h in advice_hits)),
-    ("Gate 3 · Template compliance", not unapproved,
+    ("Gate 3 · No fear, FOMO or urgency", not tone_hits,
+     "0 pressure words in the approved copy library or on screen." if not tone_hits
+     else "Blocked: " + ", ".join(f"“{h}”" for h in tone_hits)),
+    ("Gate 4 · Template compliance", not unapproved,
      "100% pre-approved copy; slots only, no free text." if not unapproved
      else f"Blocked: {len(unapproved)} unapproved message(s)."),
-    ("Gate 4 · Safe fallback", True,
+    ("Gate 5 · Safe fallback", True,
      "Inconclusive score: showing the standard T-1 reminder instead." if band == "unsure"
      else "Scores of 40–69% fall back to the standard T-1 reminder."),
 ]
@@ -306,7 +362,7 @@ st.markdown(
     f'<div class="nav"><div class="l"><span class="brand"><i></i>Invest</span>'
     f'<span class="tabs"><span>Stocks</span><span class="on">Mutual Funds</span><span>SIPs</span><span>UPI</span></span>'
     f'</div><div class="r"><span class="ico">{SEARCH}</span><span class="ico">{BELL}'
-    f'{"<span class=dot></span>" if guard_on and not ss.choice else ""}</span>'
+    f'</span>'
     f'<span class="avatar">{USER[0]}</span></div></div>', unsafe_allow_html=True)
 
 g_l, g_r = st.columns([3, 1.3], vertical_alignment="bottom")
@@ -356,7 +412,7 @@ def upi_dialog() -> None:
 with main:
     with keyed("debit_card"):
         st.markdown('<h3 style="margin:0;font-size:16px;color:#0F172A">Upcoming debit</h3>', unsafe_allow_html=True)
-        pill = ('<span class="pill p-coral">High bounce risk</span>' if guard_on and not ss.choice and ss.t0 is None
+        pill = ('<span class="pill p-amber">Needs a look</span>' if guard_on and not ss.choice and ss.t0 is None
                 else '<span class="pill p-mint">Guard protected</span>' if ss.choice and ss.t0 is None and ss.flag_on
                 else '<span class="pill p-grey">Scheduled</span>' if ss.t0 is None
                 else '<span class="pill p-coral">Debit failed</span>' if ss.t0 == "failed" and not ss.paid_after
@@ -367,30 +423,23 @@ with main:
         # ---- before debit day ----
         if ss.t0 is None:
             if guard_on and not ss.choice:
-                st.markdown(f'<div class="alert"><div class="t">{esc(t("alert_t"))}</div><div class="b">'
-                            f'{esc(t("alert_b", amt=inr(DUE), date=DEBIT_DATE, n=len(FUNDS), bank=BANK))}</div></div>',
+                st.markdown(f'<div class="alert"><div class="t">{esc(t("alert_t", date=DEBIT_DATE))}</div><div class="b">'
+                            f'{esc(t("alert_b", amt=inr(DUE), date=DEBIT_DATE, n=len(FUNDS), bank=BANK))}</div>'
+                            f'<div class="fee">{esc(t("alert_fee"))}</div></div>',
                             unsafe_allow_html=True)
                 c1, c2 = st.columns(2)
                 with c1:
-                    if st.button(t("o_pay"), type="primary", use_container_width=True, key="o_pay"):
+                    if st.button(t("o_pay"), use_container_width=True, key="o_pay"):
                         upi_dialog()
                     st.button(t("o_shift"), use_container_width=True, key="o_shift", on_click=choose, args=("shift",))
                 with c2:
                     st.button(t("o_skip"), use_container_width=True, key="o_skip", on_click=choose, args=("skip",))
                     st.button(t("o_keep"), use_container_width=True, key="o_keep", on_click=choose, args=("keep",))
-                st.markdown('<div class="sub">Skip and Pay are penalty-free because the debit is never presented to '
-                            'your bank. Cancel stays available in SIP settings.</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="sub">{esc(t("o_note"))}</div>', unsafe_allow_html=True)
                 st.markdown(tracker([("Notified", "done"), ("Scheduled", ""), ("Guard Protected", "")]),
                             unsafe_allow_html=True)
             elif ss.choice and ss.flag_on:
-                msg = {"skip_pay": f"<b>Paid {inr(DUE)} via UPI.</b> The {DEBIT_DATE} auto-debit won't be presented "
-                                   f"to your bank, so there's no duplicate debit and no bounce charge.",
-                       "skip": f"<b>Skipped for November.</b> The {DEBIT_DATE} debit won't be presented to your bank: "
-                               f"no bounce charge. Your SIPs stay active; next debit {NEXT_DATE}.",
-                       "shift": f"<b>Date moved.</b> From December your SIPs debit on the 8th, after salary credit. "
-                                f"The {DEBIT_DATE} debit is still scheduled; we'll remind you on 4 Nov.",
-                       "keep": f"<b>Debit kept.</b> We'll remind you on 4 Nov (T-1) to keep {inr(DUE)} in "
-                               f"{BANK}."}[ss.choice]
+                msg = CONFIRM[ss.choice].format(amt=inr(DUE), date=DEBIT_DATE, next=NEXT_DATE, bank=BANK)
                 st.markdown(f'<div class="ok">{msg}</div>', unsafe_allow_html=True)
                 if ss.choice in ("shift", "keep"):
                     ss.balance_added = st.checkbox(f"I've added {inr(DUE)} to my bank account",
@@ -416,7 +465,7 @@ with main:
                 st.markdown(f'<div class="ok">✓ No debit presented to {BANK} on {DEBIT_DATE}. '
                             + (f"{inr(DUE)} invested via UPI." if ss.choice == "skip_pay" else
                                f"Instalments skipped; next debit {NEXT_DATE}.")
-                            + ' No bounce charge.</div>', unsafe_allow_html=True)
+                            + ' No bank charge.</div>', unsafe_allow_html=True)
                 st.markdown(tracker([("Notified", "done"), ("Scheduled", "done"), ("Guard Protected", "done")]),
                             unsafe_allow_html=True)
             elif ss.t0 == "success" or ss.paid_after:
@@ -492,6 +541,8 @@ with side:
             st.markdown(f'<div style="margin-top:14px"><div class="sub" style="font-weight:600;color:{INK}">Eval '
                         f'gates</div>{gate_html}</div>', unsafe_allow_html=True)
             st.toggle("Demo: inject an unapproved marketing message", key="rogue")
+            with st.expander("How SIP Guard meets the project constraints"):
+                st.markdown(CONSTRAINTS_MD)
             st.markdown('<div class="sub" style="margin-top:8px">Data: the mandate\'s own debit history; bank balance '
                         'only with Account Aggregator consent; never SMS. Built for DPDP notice and purpose limits and '
                         'SEBI\'s expected AI rules on accountability, oversight and kill switches.</div>',
