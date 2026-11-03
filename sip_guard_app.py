@@ -1,26 +1,43 @@
 """
-SIP Guard — concept prototype of a predictive AutoPay-failure defence inside a mutual-fund app.
+SIP Guard — AI-native MVP inside a Groww-style Mutual Funds dashboard.
+NextLeap PM Capstone · Part 5: Build and Deploy an AI-Native MVP
 
-Run:  pip install "streamlit>=1.39"  &&  streamlit run sip_guard_app.py
+Run locally:
+    pip install -r requirements.txt
+    streamlit run sip_guard_app.py
 
-NextLeap PM capstone prototype. Not affiliated with or endorsed by Groww. The investor, portfolio, fund names,
-NAVs, returns, model weights and backtest figures are all illustrative. Evidence figures (680 public reviews,
-₹295–885 bounce charges) come from the SIP Discovery Engine and public bank-charge reporting.
+What is real and what is simulated
+- The risk model is a real scikit-learn GradientBoostingClassifier, trained at start-up on SYNTHETIC debit logs
+  (18,000 monthly debits, 1,500 simulated investors, 12 months). No real Groww or bank data is used.
+- Every eval gate is computed live: precision and fairness from a time-split backtest (train on months 1–9,
+  test on months 10–12), compliance and tone gates by scanning the approved copy library with regex.
+- The investor (Ritu), the portfolio and the bank accounts are fictional. Fund names are used only as labels;
+  no NAVs, returns or ratings of real funds are shown.
+- Evidence figures (680 records, 83-case golden set, 35% / 62% / 11%, ₹295–₹885 bounce charges) come from the
+  Groww SIP Discovery Engine and public bank fee schedules.
+
+Concept prototype for a NextLeap capstone. Not affiliated with or endorsed by Groww.
 """
 from __future__ import annotations
 
 import html
 import re
+from datetime import date, timedelta
 
+import numpy as np
+import pandas as pd
 import streamlit as st
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.metrics import precision_score, recall_score
 
-st.set_page_config(page_title="SIP Guard · Concept prototype", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="Mutual Funds · SIP Guard", page_icon="🛡️", layout="wide")
 
-# ----------------------------------------------------------------------------------------------------------------
-# Design tokens
-# ----------------------------------------------------------------------------------------------------------------
-MINT, MINT_DK, NAVY, WHITE, CANVAS, BORDER, CORAL = "#00D09C", "#00B386", "#0F172A", "#FFFFFF", "#F8FAFC", "#ECEFF2", "#EF4444"
-INK, BODY, META = "#0F172A", "#44475B", "#7C7E8C"
+# =================================================================================================================
+# MODULE 1 · DESIGN TOKENS, GLOBAL STYLING, NAVIGATION, PORTFOLIO SHELF
+# =================================================================================================================
+MINT, MINT_DK, MINT_TXT = "#00D09C", "#00B386", "#00805F"
+NAVY, BODY, META = "#0F172A", "#44475B", "#7C7E8C"
+CANVAS, BORDER, WHITE, RED = "#F8FAFC", "#ECEFF2", "#FFFFFF", "#EF4444"
 
 st.markdown(f"""
 <style>
@@ -28,83 +45,86 @@ st.markdown(f"""
 html, body, .stApp, .stApp *:not([data-testid="stIconMaterial"]):not(.material-symbols-rounded) {{
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important; }}
 .stApp {{ background: {CANVAS}; }}
-#MainMenu, footer {{ visibility: hidden; }}
+#MainMenu, footer, header {{ visibility: hidden; }}
 [data-testid="stHeader"], [data-testid="stDecoration"], [data-testid="stToolbar"] {{ display: none; }}
-.block-container {{ padding-top: 0.8rem; padding-bottom: 2rem; max-width: 1240px; }}
+.block-container {{ padding-top: 0.8rem; padding-bottom: 2rem; max-width: 1260px; }}
 
-/* nav */
-.nav {{ display: flex; align-items: center; justify-content: space-between; gap: 16px; background: {WHITE};
-  border: 1px solid {BORDER}; border-radius: 14px; padding: 10px 18px; }}
-.nav .l {{ display: flex; align-items: center; gap: 22px; min-width: 0; }}
-.brand {{ display: flex; align-items: center; gap: 8px; font-weight: 700; color: {INK}; font-size: 16px; white-space: nowrap; }}
-.brand i {{ width: 26px; height: 26px; border-radius: 50%; background: {MINT}; display: inline-block; }}
-.tabs {{ display: flex; gap: 18px; font-size: 14px; font-weight: 500; color: {META}; white-space: nowrap; }}
-.tabs .on {{ color: {INK}; font-weight: 600; border-bottom: 2px solid {MINT}; padding-bottom: 3px; }}
-.nav .r {{ display: flex; align-items: center; gap: 16px; }}
-.ico {{ position: relative; display: inline-flex; color: {INK}; }}
-.dot {{ position: absolute; top: -1px; right: -1px; width: 8px; height: 8px; background: {CORAL}; border-radius: 50%;
+/* top nav */
+.nav {{ display: flex; align-items: center; gap: 18px; background: {WHITE}; border: 1px solid {BORDER};
+  border-radius: 14px; padding: 10px 18px; }}
+.logo {{ display: flex; align-items: center; gap: 8px; font-weight: 700; color: {NAVY}; font-size: 17px; white-space: nowrap; }}
+.logo i {{ width: 28px; height: 28px; border-radius: 50%; display: inline-block;
+  background: conic-gradient({MINT} 0 50%, #5367FF 50% 100%); }}
+.search {{ flex: 1 1 auto; display: flex; align-items: center; gap: 8px; background: {CANVAS}; border: 1px solid {BORDER};
+  border-radius: 10px; padding: 8px 12px; color: {META}; font-size: 14px; min-width: 0; max-width: 520px; }}
+.nav .r {{ margin-left: auto; display: flex; align-items: center; gap: 16px; }}
+.ico {{ position: relative; display: inline-flex; color: {NAVY}; }}
+.dot {{ position: absolute; top: -1px; right: -1px; width: 8px; height: 8px; background: {RED}; border-radius: 50%;
   border: 2px solid {WHITE}; }}
-.avatar {{ width: 32px; height: 32px; border-radius: 50%; background: #E6FAF5; color: #00805F; font-weight: 700;
-  display: inline-flex; align-items: center; justify-content: center; font-size: 14px; }}
-@media (max-width: 760px) {{ .tabs {{ display: none; }} }}
+.avatar {{ display: inline-flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; color: {NAVY}; }}
+.avatar b {{ width: 32px; height: 32px; border-radius: 50%; background: #E6FAF5; color: {MINT_TXT}; font-weight: 700;
+  display: inline-flex; align-items: center; justify-content: center; font-size: 13px; }}
+.subnav {{ display: flex; gap: 26px; padding: 12px 6px 0 6px; font-size: 15px; font-weight: 500; color: {META};
+  border-bottom: 1px solid {BORDER}; }}
+.subnav span {{ padding-bottom: 10px; }}
+.subnav .on {{ color: {NAVY}; font-weight: 600; border-bottom: 3px solid {MINT}; }}
+@media (max-width: 760px) {{ .search {{ display: none; }} .avatar span {{ display: none; }} }}
 
-/* greeting + summary */
-.hi h2 {{ margin: 18px 0 2px 0; color: {INK}; font-size: 24px; font-weight: 700; letter-spacing: -0.01em; }}
+/* greeting + portfolio shelf */
+.hi h2 {{ margin: 18px 0 2px 0; color: {NAVY}; font-size: 24px; font-weight: 700; letter-spacing: -0.01em; }}
 .hi p {{ margin: 0; color: {BODY}; font-size: 14px; }}
 .sum {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); background: {WHITE}; border: 1px solid {BORDER};
   border-radius: 16px; margin: 14px 0 18px 0; box-shadow: 0 1px 3px rgba(0,0,0,.04); }}
 .sum > div {{ padding: 14px 18px; border-right: 1px solid {BORDER}; min-width: 0; }}
 .sum > div:last-child {{ border-right: 0; }}
 .sum .k {{ font-size: 12.5px; color: {META}; }}
-.sum .v {{ font-size: 20px; font-weight: 700; color: {INK}; margin-top: 2px; letter-spacing: -0.01em; }}
-.up {{ color: #00A57D; }} .down {{ color: {CORAL}; }}
+.sum .v {{ font-size: 20px; font-weight: 700; color: {NAVY}; margin-top: 2px; letter-spacing: -0.01em; }}
+.up {{ color: #00A57D !important; }}
 @media (max-width: 760px) {{ .sum {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
   .sum > div:nth-child(2) {{ border-right: 0; }} .sum > div:nth-child(-n+2) {{ border-bottom: 1px solid {BORDER}; }} }}
 
-/* cards */
+/* cards, pills, text */
 .card {{ background: {WHITE}; border: 1px solid {BORDER}; border-radius: 16px; padding: 16px 18px; margin-bottom: 14px;
-  box-shadow: 0 1px 3px rgba(0,0,0,.04), 0 2px 6px -1px rgba(0,0,0,.02); }}
-.card h3 {{ margin: 0 0 2px 0; font-size: 16px; color: {INK}; font-weight: 700; }}
+  box-shadow: 0 1px 3px rgba(0,0,0,.04); }}
+.card h3, .h3 {{ margin: 0 0 2px 0; font-size: 16px; color: {NAVY}; font-weight: 700; }}
 .sub {{ font-size: 12.5px; color: {META}; line-height: 1.5; }}
-.pill {{ display: inline-flex; align-items: center; gap: 4px; border-radius: 9999px; padding: 3px 9px; font-size: 11.5px;
+.pill {{ display: inline-flex; align-items: center; gap: 4px; border-radius: 9999px; padding: 3px 10px; font-size: 11.5px;
   font-weight: 600; white-space: nowrap; }}
-.p-mint {{ color: #00805F; background: #E6FAF5; }} .p-coral {{ color: #C62828; background: #FEE2E2; }}
+.p-mint {{ color: {MINT_TXT}; background: #E6FAF5; }} .p-red {{ color: #B91C1C; background: #FEE2E2; }}
 .p-amber {{ color: #B45309; background: #FEF3C7; }} .p-grey {{ color: {BODY}; background: #F1F5F9; }}
-.p-blue {{ color: #1D4ED8; background: #DBEAFE; }}
 
-/* fund rows */
-.fund {{ display: grid; grid-template-columns: minmax(0, 1.7fr) 96px minmax(0, 0.9fr) minmax(0, 0.9fr); gap: 12px;
-  align-items: center; padding: 14px 0; border-top: 1px solid {BORDER}; }}
-.fund:first-of-type {{ border-top: 0; }}
-.fund .nm {{ font-size: 14.5px; font-weight: 600; color: {INK}; }}
-.fund .tags {{ font-size: 12px; color: {META}; margin-top: 3px; }}
-.fund .num {{ font-size: 14px; font-weight: 600; color: {INK}; text-align: right; }}
-.fund .lab {{ font-size: 11.5px; color: {META}; text-align: right; }}
-@media (max-width: 640px) {{ .fund {{ grid-template-columns: minmax(0, 1fr) 80px; }} .fund .hide-sm {{ display: none; }} }}
+/* SIP card (keyed containers so real buttons sit inside) */
+.st-key-sip_ppfas, .st-key-sip_nippon, .st-key-evaluator {{ background: {WHITE}; border: 1px solid {BORDER};
+  border-radius: 16px; padding: 16px 18px; margin-bottom: 14px; box-shadow: 0 1px 3px rgba(0,0,0,.04); }}
+.st-key-evaluator {{ border: 1px dashed #94A3B8; }}
+.siphead {{ display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }}
+.fundico {{ width: 40px; height: 40px; border-radius: 10px; background: #EEF2FF; color: #4338CA; font-weight: 700;
+  display: inline-flex; align-items: center; justify-content: center; font-size: 13px; flex: 0 0 auto; }}
+.fn {{ font-size: 15px; font-weight: 600; color: {NAVY}; }}
+.meta3 {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 14px 0 4px 0; }}
+.meta3 .k {{ font-size: 11.5px; color: {META}; }} .meta3 .v {{ font-size: 14px; font-weight: 600; color: {NAVY}; }}
 
-/* alert */
-.alert {{ border: 1px solid #FDE68A; background: #FFFBEB; border-radius: 14px; padding: 14px 16px; }}
-.alert .t {{ font-size: 15px; font-weight: 700; color: {INK}; }}
-.alert .fee {{ font-size: 12.5px; color: {BODY}; margin-top: 8px; }}
-.alert .b {{ font-size: 13.5px; color: {INK}; margin-top: 6px; line-height: 1.55; }}
-.ok {{ border: 1px solid #A7F3D0; background: #ECFDF5; border-radius: 14px; padding: 14px 16px; font-size: 13.5px;
-  color: #065F46; line-height: 1.55; }}
-.info {{ border: 1px solid {BORDER}; background: {CANVAS}; border-radius: 14px; padding: 14px 16px; font-size: 13.5px;
-  color: {INK}; line-height: 1.55; }}
-.fail {{ border: 1px solid #FECACA; background: #FEE2E2; border-radius: 14px; padding: 14px 16px; font-size: 13.5px;
-  color: #7F1D1D; line-height: 1.55; }}
-.debit {{ display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 12px; }}
-.debit .amt {{ font-size: 22px; font-weight: 700; color: {INK}; }}
+/* SIP Guard notice (calm by design: amber, no red, no countdown) */
+.guard {{ border: 1px solid #FDE68A; background: #FFFBEB; border-radius: 14px; padding: 14px 16px; margin-top: 12px; }}
+.guard .t {{ font-size: 15px; font-weight: 700; color: {NAVY}; }}
+.guard .b {{ font-size: 13.5px; color: {NAVY}; margin-top: 6px; line-height: 1.55; }}
+.guard .fee {{ font-size: 12.5px; color: {BODY}; margin-top: 8px; }}
+.ok {{ border: 1px solid #A7F3D0; background: #ECFDF5; border-radius: 14px; padding: 12px 16px; font-size: 13.5px;
+  color: #065F46; line-height: 1.55; margin-top: 12px; }}
+.info {{ border: 1px solid {BORDER}; background: {CANVAS}; border-radius: 14px; padding: 12px 16px; font-size: 13.5px;
+  color: {NAVY}; line-height: 1.55; margin-top: 12px; }}
+.fail {{ border: 1px solid #FECACA; background: #FEE2E2; border-radius: 14px; padding: 12px 16px; font-size: 13.5px;
+  color: #7F1D1D; line-height: 1.55; margin-top: 12px; }}
 
-/* tracker */
-.track {{ display: flex; align-items: center; gap: 0; margin: 14px 0 4px 0; }}
-.track .s {{ display: flex; flex-direction: column; align-items: center; gap: 4px; flex: 0 0 auto; font-size: 12px;
-  font-weight: 600; color: {META}; }}
+/* status timeline */
+.track {{ display: flex; align-items: flex-start; margin: 14px 0 6px 0; }}
+.track .s {{ display: flex; flex-direction: column; align-items: center; gap: 4px; flex: 0 0 auto; font-size: 11.5px;
+  font-weight: 600; color: {META}; text-align: center; max-width: 92px; }}
 .track .c {{ width: 22px; height: 22px; border-radius: 50%; border: 2px solid #CBD5E1; background: {WHITE};
   display: inline-flex; align-items: center; justify-content: center; font-size: 12px; color: {WHITE}; }}
-.track .s.done .c {{ background: {MINT}; border-color: {MINT}; }} .track .s.done {{ color: {INK}; }}
-.track .s.bad .c {{ background: {CORAL}; border-color: {CORAL}; }} .track .s.bad {{ color: #B91C1C; }}
-.track .ln {{ flex: 1 1 auto; height: 2px; background: #E2E8F0; margin: 0 6px 18px 6px; }}
+.track .s.done .c {{ background: {MINT}; border-color: {MINT}; }} .track .s.done {{ color: {NAVY}; }}
+.track .s.bad .c {{ background: {RED}; border-color: {RED}; }} .track .s.bad {{ color: #B91C1C; }}
+.track .ln {{ flex: 1 1 auto; height: 2px; background: #E2E8F0; margin: 10px 4px 0 4px; }}
 .track .ln.done {{ background: {MINT}; }}
 
 /* buttons */
@@ -112,24 +132,19 @@ html, body, .stApp, .stApp *:not([data-testid="stIconMaterial"]):not(.material-s
 .stButton button[kind="primary"] {{ background: {MINT}; border: 0; color: {WHITE}; }}
 .stButton button[kind="primary"]:hover {{ background: {MINT_DK}; color: {WHITE}; }}
 .stButton button[kind="secondary"] {{ background: {WHITE}; border: 1px solid #E2E8F0; color: {BODY}; }}
-.stButton button[kind="secondary"]:hover {{ border-color: {MINT}; color: #00805F; background: #F6FFFC; }}
+.stButton button[kind="secondary"]:hover {{ border-color: {MINT}; color: {MINT_TXT}; background: #F6FFFC; }}
 
-/* upcoming-debit card (keyed container, so real buttons sit inside it) */
-.st-key-debit_card {{ background: {WHITE}; border: 1px solid {BORDER}; border-radius: 16px; padding: 16px 18px;
-  margin-bottom: 14px; box-shadow: 0 1px 3px rgba(0,0,0,.04), 0 2px 6px -1px rgba(0,0,0,.02); }}
-
-/* evaluator panel */
-.st-key-evaluator {{ background: {WHITE}; border: 1px dashed #94A3B8; border-radius: 16px; padding: 14px 16px; }}
-.tele {{ display: grid; grid-template-columns: minmax(0, 1fr) 64px; gap: 8px; padding: 8px 0; border-bottom: 1px solid #F1F5F9;
-  font-size: 13px; color: {INK}; align-items: center; }}
-.tele .bar {{ grid-column: 1 / -1; height: 6px; background: #F1F5F9; border-radius: 9999px; position: relative; margin-top: -2px; }}
-.tele .bar span {{ position: absolute; left: 0; top: 0; bottom: 0; border-radius: 9999px; background: {CORAL}; }}
+/* evaluator telemetry */
+.tele {{ display: grid; grid-template-columns: minmax(0, 1fr) 70px; gap: 6px; padding: 8px 0;
+  border-bottom: 1px solid #F1F5F9; font-size: 13px; color: {NAVY}; align-items: center; }}
+.tele .bar {{ grid-column: 1 / -1; height: 6px; background: #F1F5F9; border-radius: 9999px; position: relative; }}
+.tele .bar span {{ position: absolute; left: 0; top: 0; bottom: 0; border-radius: 9999px; background: {NAVY}; }}
 .tele .v {{ text-align: right; font-weight: 600; }}
-.prob {{ display: flex; align-items: baseline; gap: 10px; margin: 12px 0 4px 0; }}
-.prob b {{ font-size: 32px; color: {INK}; letter-spacing: -0.02em; }}
-.gate {{ display: flex; justify-content: space-between; gap: 10px; padding: 9px 0; border-bottom: 1px solid #F1F5F9; }}
-.gate .t {{ font-size: 13px; font-weight: 600; color: {INK}; }} .gate .d {{ font-size: 12px; color: {META}; margin-top: 2px; }}
-.note {{ font-size: 11.5px; color: {META}; border-top: 1px solid {BORDER}; padding-top: 10px; margin-top: 20px; }}
+.prob {{ display: flex; align-items: baseline; gap: 10px; margin: 6px 0 4px 0; }}
+.prob b {{ font-size: 34px; color: {NAVY}; letter-spacing: -0.02em; }}
+.gate {{ display: flex; justify-content: space-between; gap: 10px; padding: 10px 0; border-bottom: 1px solid #F1F5F9; }}
+.gate .t {{ font-size: 13px; font-weight: 600; color: {NAVY}; }} .gate .d {{ font-size: 12px; color: {META}; margin-top: 2px; }}
+.note {{ font-size: 11.5px; color: {META}; border-top: 1px solid {BORDER}; padding-top: 10px; margin-top: 22px; }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -137,258 +152,363 @@ esc = lambda x: html.escape(str(x), quote=True)  # noqa: E731
 
 
 def keyed(key: str):
+    """Container with a CSS key (Streamlit ≥ 1.39); plain container on older versions."""
     try:
         return st.container(key=key)
-    except TypeError:  # Streamlit < 1.39
+    except TypeError:
         return st.container()
 
 
 def inr(x: float) -> str:
-    """Indian digit grouping: 124380 -> 1,24,380."""
+    """Indian digit grouping: 124380 -> ₹1,24,380."""
     s = f"{abs(int(round(x))):d}"
     head, tail = s[:-3], s[-3:]
     while len(head) > 2:
         tail = head[-2:] + "," + tail
         head = head[:-2]
-    out = (head + "," + tail) if head else tail
-    return ("-" if x < 0 else "") + "₹" + out
+    return ("-" if x < 0 else "") + "₹" + ((head + "," + tail) if head else tail)
 
 
-def sparkline(points: list[float], w: int = 96, h: int = 34) -> str:
-    lo, hi = min(points), max(points)
-    xs = [i * w / (len(points) - 1) for i in range(len(points))]
-    ys = [h - 3 - (p - lo) / (hi - lo or 1) * (h - 6) for p in points]
-    path = " ".join(f"{'M' if i == 0 else 'L'}{x:.1f},{y:.1f}" for i, (x, y) in enumerate(zip(xs, ys)))
-    area = path + f" L{w},{h} L0,{h} Z"
-    return (f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" aria-hidden="true">'
-            f'<path d="{area}" fill="{MINT}" fill-opacity="0.12"/><path d="{path}" fill="none" stroke="{MINT}" '
-            f'stroke-width="2" stroke-linejoin="round"/></svg>')
+def dmy(d: date) -> str:
+    return f"{d.day} {d.strftime('%b')}"
 
 
-# ----------------------------------------------------------------------------------------------------------------
-# Illustrative account (fictional numbers; the 5 Nov debits are what SIP Guard protects)
-# ----------------------------------------------------------------------------------------------------------------
-USER = "Ritu"
-BANK = "HDFC Bank ••4821"
-DEBIT_DATE, NEXT_DATE = "5 Nov", "5 Dec"
-FUNDS = [
-    {"name": "Hybrid Equity Fund", "tags": "Medium risk · Hybrid · Large Cap", "sip": 2500, "ret3y": 16.32,
-     "series": [10, 10.4, 10.2, 10.9, 11.3, 11.1, 11.8, 12.4, 12.2, 12.9, 13.5, 13.9]},
-    {"name": "Nifty 50 Index Fund", "tags": "Very high risk · Equity · Index", "sip": 1500, "ret3y": 13.85,
-     "series": [10, 10.6, 10.1, 10.8, 11.6, 11.2, 12.0, 11.7, 12.6, 13.1, 12.8, 13.6]},
-    {"name": "Flexi Cap Fund", "tags": "Very high risk · Equity · Flexi Cap", "sip": 1000, "ret3y": 18.04,
-     "series": [10, 10.3, 10.9, 10.7, 11.5, 12.1, 11.8, 12.7, 13.4, 13.0, 14.1, 14.6]},
+def ordinal(n: int) -> str:
+    return f"{n}{'th' if 11 <= n % 100 <= 13 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
+
+
+# ---- Fictional account ------------------------------------------------------------------------------------------
+USER, USER_FULL = "Ritu", "Ritu M"
+TODAY = date(2026, 11, 2)            # demo clock: 3 days before the 5 Nov debit (T-3), so every option is still free
+SKIP_CUTOFF_DAYS = 2                 # Groww: a skip within 2 days of the instalment applies only from the next one
+SIPS = [
+    {"id": "ppfas", "short": "PP", "name": "Parag Parikh Flexi Cap Fund", "plan": "Direct Growth",
+     "cat": "Equity · Flexi Cap", "amt": 2500, "day": 5, "bank": "HDFC Bank ••4821", "invested": 30000,
+     "current": 34180, "paid": 12},
+    {"id": "nippon", "short": "NI", "name": "Nippon India Small Cap Fund", "plan": "Direct Growth",
+     "cat": "Equity · Small Cap", "amt": 1500, "day": 12, "bank": "ICICI Bank ••7730", "invested": 18000,
+     "current": 20050, "paid": 12},
 ]
-DUE = sum(f["sip"] for f in FUNDS)
-INVESTED, CURRENT = 108000, 124380
-DAY_PCT = 0.55
+DAY_GAIN = 312
+for s_ in SIPS:
+    s_["next"] = date(2026, 11, s_["day"])
+    s_["after"] = date(2026, 12, s_["day"])
+GUARDED = SIPS[0]  # the debit SIP Guard is protecting in this demo
 
-# Evaluator scenarios: the model's output for this account. Contributions are shown on a simple additive
-# probability scale so evaluators can read them; a production model would be a calibrated classifier.
-SCENARIOS = {
-    "high": {"label": "High risk (87%)", "factors": [
-        ("Historical failure rate on this mandate", 34), ("3 SIPs stacked on the same date", 22),
-        ("Salary usually credited after the debit date", 19), ("Start-of-month clearing pattern", 12)]},
-    "unsure": {"label": "Inconclusive (54%)", "factors": [
-        ("Historical failure rate on this mandate", 18), ("3 SIPs stacked on the same date", 22),
-        ("Salary usually credited after the debit date", 0), ("Start-of-month clearing pattern", 14)]},
-    "low": {"label": "Low risk (9%)", "factors": [
-        ("Historical failure rate on this mandate", 3), ("3 SIPs stacked on the same date", 6),
-        ("Salary usually credited after the debit date", 0), ("Start-of-month clearing pattern", 0)]},
+# =================================================================================================================
+# MODULE 4a · RISK MODEL (trained on synthetic debit logs) + BACKTEST
+# =================================================================================================================
+FEATURES = ["bal_cover", "spend_vs_usual", "fails_6m", "lowbal_months_6m", "debit_day", "debits_same_day"]
+FEATURE_LABEL = {
+    "bal_cover": "Projected balance on debit day ÷ SIP amount",
+    "spend_vs_usual": "Spending this month vs usual",
+    "fails_6m": "Failed debits on this mandate (6 months)",
+    "lowbal_months_6m": "Months with a low balance near this date (of 6)",
+    "debit_day": "Debit day of month",
+    "debits_same_day": "Debits on the same day",
 }
-ALERT_AT, FALLBACK_AT = 70, 40   # ≥70: T-3 SIP Guard alert · 40–69: inconclusive → standard T-1 reminder · <40: silent
+ALERT_AT, FALLBACK_AT = 0.60, 0.30   # ≥60%: T-3 SIP Guard notice · 30–59%: standard T-1 reminder · <30%: silent
+PRECISION_FLOOR = 0.60
+FAIRNESS_MAX_GAP = 0.10              # max precision gap between PSU and private banks
 
-# Pre-approved copy. The app only fills slots; nothing is generated at runtime.
+
+def synthetic_debit_logs(seed: int = 42, n_users: int = 1500, months: int = 12) -> pd.DataFrame:
+    """Simulated monthly SIP debits. Failure depends mostly on cash cover on the day and spending vs usual."""
+    rng = np.random.default_rng(seed)
+    n = n_users * months
+    u = np.repeat(np.arange(n_users), months)
+    month = np.tile(np.arange(1, months + 1), n_users)
+    bank_type = np.where(rng.random(n_users) < 0.45, "PSU", "Private")[u]
+    debit_day = rng.choice([1, 3, 5, 7, 10, 12, 15, 20, 25, 28], n_users)[u]
+    tight = rng.beta(2, 4, n_users)[u]                                    # how stretched this investor usually is
+    spend = np.clip(rng.lognormal(0, 0.2, n), 0.6, 2.2)
+    cover = np.clip(np.exp(rng.normal(np.log(3.0) - 2.4 * tight, 0.6)) / spend, 0.05, 12)
+    lowbal = np.clip(np.round(tight * 7 + rng.normal(0, 1.2, n)), 0, 6)
+    fails = np.clip(rng.poisson(tight * 1.5, n), 0, 3)
+    same_day = rng.choice([1, 2, 3], n_users, p=[0.6, 0.3, 0.1])[u]
+    late = np.isin(debit_day, [25, 28]).astype(float)
+    logit = (-3.1 - 2.4 * np.log(cover) + 1.4 * (spend - 1) + 0.5 * fails + 0.2 * lowbal
+             + 0.25 * (same_day - 1) + 0.3 * late + rng.normal(0, 0.5, n))
+    failed = (rng.random(n) < 1 / (1 + np.exp(-logit))).astype(int)
+    return pd.DataFrame({"month": month, "bank_type": bank_type, "bal_cover": cover, "spend_vs_usual": spend,
+                         "fails_6m": fails, "lowbal_months_6m": lowbal, "debit_day": debit_day,
+                         "debits_same_day": same_day, "failed": failed})
+
+
+@st.cache_resource(show_spinner="Training the SIP Guard risk model on synthetic debit logs…")
+def train_and_backtest() -> dict:
+    df = synthetic_debit_logs()
+    train, test = df[df.month <= 9], df[df.month >= 10]          # time split: no peeking at the future
+    model = GradientBoostingClassifier(n_estimators=150, max_depth=3, learning_rate=0.08, random_state=7)
+    model.fit(train[FEATURES], train.failed)                     # bank type is NOT a feature (used only to audit)
+    p = model.predict_proba(test[FEATURES])[:, 1]
+    flag = p >= ALERT_AT
+    by_bank = {}
+    for b in ("PSU", "Private"):
+        k = (test.bank_type == b).to_numpy()
+        by_bank[b] = float(precision_score(test.failed[k], flag[k], zero_division=0))
+    return {
+        "model": model,
+        "rows": len(df), "train_rows": len(train), "test_rows": len(test),
+        "base_rate": float(df.failed.mean()),
+        "precision": float(precision_score(test.failed, flag, zero_division=0)),
+        "recall": float(recall_score(test.failed, flag, zero_division=0)),
+        "alerts": int(flag.sum()),
+        "by_bank": by_bank,
+        "medians": train[FEATURES].median().to_dict(),
+    }
+
+
+MODEL = train_and_backtest()
+
+# Ritu's live feature vectors for the 5 Nov debit (evaluators can switch scenario to test the gates)
+SCENARIOS = {
+    "high": {"label": "Cash crunch this month",
+             "x": {"bal_cover": 0.40, "spend_vs_usual": 1.60, "fails_6m": 2, "lowbal_months_6m": 5, "debit_day": 5,
+                   "debits_same_day": 1}},
+    "unsure": {"label": "Borderline",
+               "x": {"bal_cover": 0.70, "spend_vs_usual": 1.35, "fails_6m": 1, "lowbal_months_6m": 3, "debit_day": 5,
+                     "debits_same_day": 1}},
+    "low": {"label": "Healthy balance",
+            "x": {"bal_cover": 3.00, "spend_vs_usual": 0.90, "fails_6m": 0, "lowbal_months_6m": 0, "debit_day": 5,
+                  "debits_same_day": 1}},
+}
+NIPPON_X = {"bal_cover": 3.2, "spend_vs_usual": 1.0, "fails_6m": 0, "lowbal_months_6m": 0, "debit_day": 12,
+            "debits_same_day": 1}
+
+
+def score(x: dict) -> float:
+    return float(MODEL["model"].predict_proba(pd.DataFrame([x], columns=FEATURES))[0, 1])
+
+
+def drivers(x: dict) -> list[tuple[str, str, float]]:
+    """How much each feature raises the score vs a typical (median) investor: p(x) − p(x with feature at median)."""
+    base = score(x)
+    out = []
+    for f in FEATURES:
+        x2 = dict(x)
+        x2[f] = MODEL["medians"][f]
+        out.append((FEATURE_LABEL[f], f"{x[f]:g}", base - score(x2)))
+    return sorted(out, key=lambda r: -r[2])
+
+
+# =================================================================================================================
+# APPROVED COPY LIBRARY (the app only fills slots; nothing is free-generated) + LINT RULES
+# =================================================================================================================
 TEMPLATES = {
-    "alert_t": {"ok": True, "text": "SIP Guard: your {date} debit may not go through"},
-    "alert_b": {"ok": True, "text": "Your {amt} debit on {date} ({n} SIPs, {bank} mandate) may not go through: in recent "
-                                    "months your balance was low around this date. Here are some ways to handle it. "
-                                    "Nothing changes unless you choose."},
-    "alert_fee": {"ok": True, "text": "For reference: if a debit fails, banks usually charge ₹250–750 + GST per SIP."},
-    "fallback": {"ok": True, "text": "Reminder: {amt} will be debited from {bank} on {date}. Please keep enough "
+    "notice_t": {"ok": True, "text": "🛡️ SIP Guard: your {date} debit may not go through"},
+    "notice_b": {"ok": True, "text": "Your {amt} debit for {fund} on {date} ({bank}) may not go through. In recent "
+                                     "months your balance has been low around this date. Here are some ways to "
+                                     "handle it. Nothing changes unless you choose."},
+    "notice_fee": {"ok": True, "text": "For reference: if a debit fails, banks usually charge ₹295–₹885 incl. GST."},
+    "reminder": {"ok": True, "text": "Reminder: {amt} will be debited from {bank} on {date}. Please keep enough "
                                      "balance."},
-    "o_pay": {"ok": True, "text": "Skip this month & pay via UPI"},
-    "o_skip": {"ok": True, "text": "Skip this month"},
-    "o_shift": {"ok": True, "text": "Move future SIP dates to the 8th"},
-    "o_keep": {"ok": True, "text": "Keep the debit as it is"},
-    "o_note": {"ok": True, "text": "Skip and pay-by-UPI cost nothing because the debit is never sent to your bank. "
-                                   "You can also cancel any SIP from SIP settings."},
-    "recovery": {"ok": True, "text": "Your {date} debit didn't go through. We will not retry it automatically, so your "
-                                     "bank won't charge you twice."},
+    "o_upi": {"ok": True, "text": "⚡ Skip this month's AutoPay & pay via UPI"},
+    "o_upi_d": {"ok": True, "text": "Pay {amt} from any UPI app or another bank. The {date} AutoPay debit is not sent "
+                                    "to {bank}, so it can't bounce."},
+    "o_skip": {"ok": True, "text": "⏸️ Skip this month"},
+    "o_skip_d": {"ok": True, "text": "This instalment isn't sent to your bank. Your SIP stays active and resumes on "
+                                     "{after}."},
+    "o_shift": {"ok": True, "text": "📅 Move future SIP dates"},
+    "o_shift_d": {"ok": True, "text": "Pick a day that suits your cash flow. Applies from December."},
+    "o_keep": {"ok": True, "text": "✅ Keep the debit as it is"},
+    "o_keep_d": {"ok": True, "text": "Nothing changes. We'll send one reminder the day before."},
+    "skip_rule": {"ok": True, "text": "Note: skips count toward the AMCs' rule that 3 missed or skipped instalments "
+                                      "in a row cancel a SIP ({used} of 3 used after this skip)."},
+    "recovery": {"ok": True, "text": "Your {date} debit didn't go through. You can still invest this month by paying "
+                                     "via UPI."},
     "rogue": {"ok": False, "text": "Markets are rallying! Don't miss out: top up your best fund now for guaranteed "
                                    "returns."},
 }
-ADVICE = re.compile(r"\b(guarantee\w*|best fund|recommend\w*|buy|sell|rally\w*|top up your|switch to|"
-                    r"outperform\w*|returns will)\b", re.I)
-# Project constraint: no fear, FOMO or urgency. Investor-facing copy may not use these.
-PRESSURE = re.compile(r"\b(now|hurry|urgent\w*|immediately|avoid|last chance|don'?t miss|miss out|act fast|"
-                      r"too late|lose|losing|only today|high risk|alert|warning|penalt\w*)\b", re.I)
-
-# Confirmation and toast copy is part of the approved library too, so the tone gate can lint all of it.
 CONFIRM = {
-    "skip_pay": "<b>Paid {amt} via UPI.</b> The {date} auto-debit won't be sent to your bank, so there's no duplicate "
-                "debit and no bank charge.",
-    "skip": "<b>Skipped for November.</b> The {date} debit won't be sent to your bank, so there's no bank charge. "
-            "Your SIPs stay active; next debit {next}.",
-    "shift": "<b>Date moved.</b> From December your SIPs debit on the 8th. The {date} debit is still scheduled; we'll "
-             "send a reminder on 4 Nov.",
-    "keep": "<b>Debit kept.</b> We'll send a reminder on 4 Nov to keep {amt} in {bank}.",
+    "upi": "<b>Paid {amt} via UPI.</b> AutoPay for {date} is paused for this instalment, so there's no duplicate "
+           "debit and no bank charge. Units at the NAV of the payment date.",
+    "skip": "<b>Skipped for November.</b> SIP remains active. Not sent to your bank, so no bank charge. "
+            "Resumes automatically on {after}.",
+    "shift": "<b>Date moved.</b> From December this SIP debits on the {day}. The {date} debit is still scheduled; "
+             "we'll send one reminder on {t1}.",
+    "keep": "<b>Debit kept.</b> We'll send one reminder on {t1} to keep {amt} in {bank}.",
+}
+STATUS = {
+    "upi": "🟢 Paid via UPI · AutoPay paused (₹0 bank charge)",
+    "skip": "🟢 Skipped · SIP active (₹0 bank charge)",
+    "shift": "🟢 From Dec: debits on the {day}",
+    "keep": "🔔 Kept · reminder on {t1}",
 }
 TOASTS = {
-    "skip_pay": "{amt} paid via UPI · the {date} debit won't be sent to your bank",
-    "skip": "November instalments skipped · SIPs stay active",
-    "shift": "From December, your SIPs debit on the 8th",
-    "keep": "Debit kept · reminder on 4 Nov",
-    "paid": "{amt} paid via UPI · units at the NAV of the payment date",
+    "upi": "{amt} paid via UPI · AutoPay paused for {date}",
+    "skip": "November instalment skipped · SIP stays active",
+    "shift": "From December, this SIP debits on the {day}",
+    "keep": "Debit kept · reminder on {t1}",
+    "paid_after": "{amt} paid via UPI · units at the NAV of the payment date",
 }
-
-
-def library_tone_hits() -> list[str]:
-    """Lints every approved investor-facing string, not only what is on screen right now."""
-    texts = [v["text"] for v in TEMPLATES.values() if v["ok"]] + list(CONFIRM.values()) + list(TOASTS.values())
-    return sorted({m.group(0).lower() for x in texts for m in PRESSURE.finditer(re.sub(r"<[^>]+>", "", x))})
-
-
-CONSTRAINTS_MD = """
-**No specific funds or stocks.** SIP Guard only changes *how* this month's money moves, never *where* it goes.
-
-| Off-limits | What SIP Guard does instead |
-| --- | --- |
-| \"Switch to a safer fund\" or \"park it in a liquid fund\" | Operational choices only: skip, pay via UPI, move the date, keep |
-| Suggesting how much to invest | No amounts suggested; the investor's own SIP amount is used as is |
-| Showing a fund's returns to keep someone invested | Fund cards show the investor's own holdings; the alert never mentions returns |
-
-**No fear, FOMO or urgency.**
-
-| Off-limits | What SIP Guard does instead |
-| --- | --- |
-| \"Avoid a ₹590 penalty!\" | The bank charge is stated once, as reference information |
-| \"Act now\" or countdowns | Alert comes 3 days early; nothing changes unless the investor chooses |
-| \"Don't miss market gains\" | No market, return or compounding claims anywhere in the flow |
-| Red alarms, badges, one highlighted choice | Neutral amber card, equal-weight options, no notification dot |
-| Repeated nudges | One alert per instalment; a single T-1 reminder only if the debit is kept |
-| Making it hard to leave | Cancel stays available in SIP settings |
-
-Gate 2 (advice) and Gate 3 (pressure words) lint the whole approved copy library, so these rules are checked, not just promised.
-"""
+# Non-advisory guardrail (SEBI): no fund picks, amounts or market claims.
+ADVICE = re.compile(r"\b(guarantee\w*|best fund|recommend\w*|buy|sell|rally\w*|top up your|switch to|"
+                    r"outperform\w*|returns will|should invest)\b", re.I)
+# Tone guardrail: no fear, FOMO or urgency in anything the investor sees.
+PRESSURE = re.compile(r"\b(now|hurry|urgent\w*|immediately|avoid|last chance|don'?t miss|miss out|act fast|"
+                      r"too late|lose|losing|only today|high risk|alert|warning|penalt\w*)\b", re.I)
 
 
 def t(key: str, **kw) -> str:
     return TEMPLATES[key]["text"].format(**kw)
 
 
-# ----------------------------------------------------------------------------------------------------------------
-# State
-# ----------------------------------------------------------------------------------------------------------------
+def strip_tags(x: str) -> str:
+    return re.sub(r"<[^>]+>", "", x)
+
+
+def library_texts() -> list[str]:
+    return ([v["text"] for v in TEMPLATES.values() if v["ok"]] + list(CONFIRM.values()) + list(STATUS.values())
+            + list(TOASTS.values()))
+
+
+# =================================================================================================================
+# MODULE 3 · STATE MACHINE (st.session_state)
+# =================================================================================================================
 ss = st.session_state
-ss.setdefault("choice", None)        # skip_pay | skip | shift | keep
-ss.setdefault("t0", None)            # None | not_presented | success | failed
+ss.setdefault("choice", None)          # None | upi | skip | shift | keep
+ss.setdefault("shift_day", 8)
+ss.setdefault("t0", None)              # None | not_presented | success | failed
 ss.setdefault("paid_after", False)
 ss.setdefault("balance_added", False)
-ss.setdefault("flag_on", True)
+ss.setdefault("flag_on", True)         # kill switch
 ss.setdefault("eval_mode", False)
 ss.setdefault("scenario", "high")
 ss.setdefault("rogue", False)
+ss.setdefault("prior_skips", 0)        # consecutive skips/misses before this instalment
+ss.setdefault("log", [])
+ss.setdefault("pending_toast", None)   # toasts raised inside the dialog survive its st.rerun()
+if ss.pending_toast:
+    st.toast(ss.pending_toast)
+    ss.pending_toast = None
+
+
+def fmt(x: str) -> str:
+    return x.format(amt=inr(GUARDED["amt"]), date=dmy(GUARDED["next"]), after=dmy(GUARDED["after"]),
+                    bank=GUARDED["bank"], fund=GUARDED["name"], day=ordinal(ss.shift_day),
+                    t1=dmy(GUARDED["next"] - timedelta(days=1)))
+
+
+def log(event: str) -> None:
+    ss.log = ss.log + [event]
 
 
 def reset() -> None:
     ss.choice, ss.t0, ss.paid_after, ss.balance_added = None, None, False, False
+    ss.log = []
 
 
 def choose(c: str) -> None:
     ss.choice = c
-    st.toast(TOASTS[c].format(amt=inr(DUE), date=DEBIT_DATE))
+    log({"upi": "UPI payment recorded · AutoPay presentation paused", "skip": "Skip request sent before cut-off",
+         "shift": f"Future SIP date → {ordinal(ss.shift_day)}", "keep": "Kept · T-1 reminder queued"}[c])
+    ss.pending_toast = fmt(TOASTS[c])
 
 
 def simulate_debit_day() -> None:
-    if ss.choice in ("skip_pay", "skip"):
+    risky = ss.scenario == "high"
+    if ss.choice in ("upi", "skip"):
         ss.t0 = "not_presented"
-    elif ss.choice == "keep" and ss.balance_added:
+    elif ss.balance_added or not risky:
         ss.t0 = "success"
     else:
-        ss.t0 = "failed" if ss.scenario == "high" else "success"
+        ss.t0 = "failed"
+    log(f"Debit day ({dmy(GUARDED['next'])}): " + {"not_presented": "not presented to bank", "success": "debited",
+                                                  "failed": "bounced (insufficient balance)"}[ss.t0])
 
 
 def pay_after_failure() -> None:
     ss.paid_after = True
-    st.toast(TOASTS["paid"].format(amt=inr(DUE)))
+    log("Paid via UPI after the failed debit")
+    st.toast(fmt(TOASTS["paid_after"]))
 
 
-# ----------------------------------------------------------------------------------------------------------------
-# Model output + gates (computed first: they decide what the investor is allowed to see)
-# ----------------------------------------------------------------------------------------------------------------
-sc = SCENARIOS[ss.scenario]
-prob = sum(v for _, v in sc["factors"])
-band = "high" if prob >= ALERT_AT else ("unsure" if prob >= FALLBACK_AT else "low")
+# =================================================================================================================
+# MODULE 4b · EVAL GATES (computed before rendering: they decide what the investor is allowed to see)
+# =================================================================================================================
+x_live = SCENARIOS[ss.scenario]["x"]
+p_live = score(x_live)
+band = "high" if p_live >= ALERT_AT else ("unsure" if p_live >= FALLBACK_AT else "low")
+p_nippon = score(NIPPON_X)
 
 shown = []
 if ss.flag_on and band == "high" and ss.t0 is None and not ss.choice:
-    shown += ["alert_t", "alert_b", "alert_fee", "o_pay", "o_skip", "o_shift", "o_keep", "o_note"]
+    shown += ["notice_t", "notice_b", "notice_fee"]
     if ss.rogue:
         shown.append("rogue")
-if ss.flag_on and ss.t0 == "failed":
-    shown.append("recovery")
 on_screen = " ".join(TEMPLATES[k]["text"] for k in shown)
+lib_and_screen = " ".join(strip_tags(x) for x in library_texts()) + " " + on_screen
+advice_hits = sorted({m.group(0) for m in ADVICE.finditer(lib_and_screen)})
+tone_hits = sorted({m.group(0).lower() for m in PRESSURE.finditer(lib_and_screen)})
 unapproved = [k for k in shown if not TEMPLATES[k]["ok"]]
-advice_hits = sorted({m.group(0) for m in ADVICE.finditer(on_screen)})
-tone_hits = sorted({m.group(0).lower() for m in PRESSURE.finditer(on_screen)} | set(library_tone_hits()))
-gates = [
-    ("Gate 1 · Precision check (≥ 60%)", True, "64.2% of alerts were real failures on a simulated 12-month backtest."),
-    ("Gate 2 · Non-advisory guardrail", not advice_hits,
-     "0 fund recommendations or market claims on screen." if not advice_hits
+gap = abs(MODEL["by_bank"]["PSU"] - MODEL["by_bank"]["Private"])
+
+GATES = [
+    ("Gate 1 · Precision backtest (≥ 60%)", MODEL["precision"] >= PRECISION_FLOOR,
+     f"{MODEL['precision']:.1%} of T-3 notices were real failures on a time-split backtest "
+     f"(train months 1–9, test months 10–12; {MODEL['test_rows']:,} synthetic debits)."),
+    ("Gate 2 · Fairness across banks (gap ≤ 10 pts)", gap <= FAIRNESS_MAX_GAP,
+     f"Precision PSU {MODEL['by_bank']['PSU']:.1%} vs private {MODEL['by_bank']['Private']:.1%} "
+     f"(gap {gap * 100:.1f} pts). Bank type is not a model input; it is only used for this audit."),
+    ("Gate 3 · Non-advisory guardrail (SEBI)", not advice_hits,
+     "0 fund picks, amounts or market claims in the copy library or on screen." if not advice_hits
      else "Blocked: " + ", ".join(f"“{h}”" for h in advice_hits)),
-    ("Gate 3 · No fear, FOMO or urgency", not tone_hits,
+    ("Gate 4 · Safe fallback (< 60% confidence)", True,
+     "Inconclusive score → showing the standard T-1 reminder instead of a notice." if band == "unsure"
+     else "Scores of 30–59% fall back to the standard T-1 reminder; below 30% nothing is shown."),
+    ("Gate 5 · No fear, FOMO or urgency", not tone_hits,
      "0 pressure words in the approved copy library or on screen." if not tone_hits
      else "Blocked: " + ", ".join(f"“{h}”" for h in tone_hits)),
-    ("Gate 4 · Template compliance", not unapproved,
+    ("Gate 6 · Template compliance", not unapproved,
      "100% pre-approved copy; slots only, no free text." if not unapproved
-     else f"Blocked: {len(unapproved)} unapproved message(s)."),
-    ("Gate 5 · Safe fallback", True,
-     "Inconclusive score: showing the standard T-1 reminder instead." if band == "unsure"
-     else "Scores of 40–69% fall back to the standard T-1 reminder."),
+     else f"Blocked: {len(unapproved)} unapproved message(s) tried to render."),
 ]
-gates_ok = all(ok for _, ok, _ in gates)
+gates_ok = all(ok for _, ok, _ in GATES)
 guard_on = ss.flag_on and band == "high" and gates_ok
 
-# ----------------------------------------------------------------------------------------------------------------
-# Top nav + greeting
-# ----------------------------------------------------------------------------------------------------------------
-SEARCH = ('<svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" fill="none" '
+# =================================================================================================================
+# RENDER · MODULE 1: NAV + GREETING + PORTFOLIO SHELF
+# =================================================================================================================
+SEARCH = ('<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" fill="none" '
           'stroke="currentColor" stroke-width="2"/><path d="M16 16l4.5 4.5" stroke="currentColor" stroke-width="2" '
           'stroke-linecap="round"/></svg>')
 BELL = ('<svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16V11a6 6 0 1 1 12 0v5l1.5 2h-15z'
         'M10 20a2 2 0 0 0 4 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>')
 st.markdown(
-    f'<div class="nav"><div class="l"><span class="brand"><i></i>Invest</span>'
-    f'<span class="tabs"><span>Stocks</span><span class="on">Mutual Funds</span><span>SIPs</span><span>UPI</span></span>'
-    f'</div><div class="r"><span class="ico">{SEARCH}</span><span class="ico">{BELL}'
-    f'</span>'
-    f'<span class="avatar">{USER[0]}</span></div></div>', unsafe_allow_html=True)
+    f'<div class="nav"><span class="logo"><i></i>Groww</span>'
+    f'<span class="search">{SEARCH}Search mutual funds, SIPs…</span>'
+    f'<div class="r"><span class="ico">{BELL}<span class="dot"></span></span>'
+    f'<span class="avatar"><b>RM</b><span>{USER_FULL}</span></span></div></div>'
+    f'<div class="subnav"><span class="on">Mutual Funds</span><span>SIP Dashboard</span><span>Orders</span></div>',
+    unsafe_allow_html=True)
 
-g_l, g_r = st.columns([3, 1.3], vertical_alignment="bottom")
+g_l, g_r = st.columns([3, 1.4], vertical_alignment="bottom")
 with g_l:
-    st.markdown(f'<div class="hi"><h2>Hi, {USER} 👋</h2><p>Here is your SIP portfolio and upcoming scheduled debits.'
-                f'</p></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="hi"><h2>Welcome back, {USER} 👋</h2><p>Your mutual fund portfolio and upcoming SIP '
+                f'debits · today {dmy(TODAY)} 2026 (demo clock)</p></div>', unsafe_allow_html=True)
 with g_r:
-    st.toggle("🔍 View AI Eval-Gate & Model Telemetry (Evaluator Mode)", key="eval_mode")
+    st.toggle("🔍 Mentor / Evaluator Mode", key="eval_mode",
+              help="Inspect the AI eval-gate architecture, model telemetry and the kill switch.")
 
+INVESTED = sum(s["invested"] for s in SIPS)
+CURRENT = sum(s["current"] for s in SIPS)
 gain = CURRENT - INVESTED
 st.markdown(
     f'<div class="sum"><div><div class="k">Total invested</div><div class="v">{inr(INVESTED)}</div></div>'
     f'<div><div class="k">Current value</div><div class="v">{inr(CURRENT)}</div></div>'
-    f'<div><div class="k">1-day returns</div><div class="v up">+{inr(CURRENT * DAY_PCT / 100)} '
-    f'<span style="font-size:14px">(+{DAY_PCT:.2f}%)</span></div></div>'
-    f'<div><div class="k">Total returns</div><div class="v up">+{inr(gain)} '
-    f'<span style="font-size:14px">(+{gain / INVESTED * 100:.2f}%)</span></div></div></div>',
-    unsafe_allow_html=True)
+    f'<div><div class="k">1-day returns</div><div class="v up">+{inr(DAY_GAIN)} <span style="font-size:14px">'
+    f'(+{DAY_GAIN / (CURRENT - DAY_GAIN) * 100:.2f}%)</span></div></div>'
+    f'<div><div class="k">Total returns</div><div class="v up">+{inr(gain)} <span style="font-size:14px">'
+    f'(+{gain / INVESTED * 100:.1f}%)</span></div></div></div>', unsafe_allow_html=True)
 
 main, side = st.columns([1.65, 1], gap="large")
 
-# ----------------------------------------------------------------------------------------------------------------
-# Upcoming debit + SIP Guard
-# ----------------------------------------------------------------------------------------------------------------
+
+# =================================================================================================================
+# RENDER · MODULE 2 + 3: RUNNING SIPS, SIP GUARD NOTICE, 1-TAP ACTION SHEET, TIMELINE
+# =================================================================================================================
 def tracker(stages: list[tuple[str, str]]) -> str:
-    """stages = [(label, 'done'|'bad'|'')]."""
     out = []
     for i, (label, s) in enumerate(stages):
         if i:
@@ -398,157 +518,236 @@ def tracker(stages: list[tuple[str, str]]) -> str:
     return '<div class="track">' + "".join(out) + "</div>"
 
 
-@st.dialog("Pay this month's SIPs via UPI")
-def upi_dialog() -> None:
-    st.markdown(f'<div class="sub">This month\'s {DEBIT_DATE} auto-debit is skipped, so it is never presented to '
-                f'{BANK}. You pay {inr(DUE)} now from any UPI app or bank account.</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="info" style="margin:12px 0"><b>{inr(DUE)}</b> · {len(FUNDS)} SIPs · units at the NAV '
-                'of the payment date</div>', unsafe_allow_html=True)
-    if st.button(f"Pay {inr(DUE)} via UPI", type="primary", use_container_width=True):
-        choose("skip_pay")
+@st.dialog("Handle your 5 Nov debit")
+def action_sheet() -> None:
+    g = GUARDED
+    st.markdown(f'<div class="sub">{esc(g["name"])} · {inr(g["amt"])} · {dmy(g["next"])} · {esc(g["bank"])}. '
+                f'All four options are free because it is more than {SKIP_CUTOFF_DAYS} days before the debit.</div>',
+                unsafe_allow_html=True)
+    st.write("")
+    if st.button(t("o_upi"), type="primary", use_container_width=True, key="d_upi"):
+        choose("upi")
         st.rerun()
+    st.caption(fmt(t("o_upi_d", amt="{amt}", date="{date}", bank="{bank}")))
+    if st.button(t("o_skip"), use_container_width=True, key="d_skip"):
+        choose("skip")
+        st.rerun()
+    st.caption(fmt(t("o_skip_d", after="{after}")) + " " + t("skip_rule", used=ss.prior_skips + 1))
+    st.markdown(f'<div style="font-weight:600;font-size:14px;margin-top:6px">{esc(t("o_shift"))}</div>',
+                unsafe_allow_html=True)
+    ss.shift_day = st.select_slider("New SIP day", options=list(range(6, 29)), value=ss.shift_day,
+                                    format_func=ordinal, label_visibility="collapsed")
+    if st.button(f"Move to the {ordinal(ss.shift_day)} from December", use_container_width=True, key="d_shift"):
+        choose("shift")
+        st.rerun()
+    st.caption(t("o_shift_d"))
+    if st.button(t("o_keep"), use_container_width=True, key="d_keep"):
+        choose("keep")
+        st.rerun()
+    st.caption(t("o_keep_d"))
 
 
 with main:
-    with keyed("debit_card"):
-        st.markdown('<h3 style="margin:0;font-size:16px;color:#0F172A">Upcoming debit</h3>', unsafe_allow_html=True)
-        pill = ('<span class="pill p-amber">Needs a look</span>' if guard_on and not ss.choice and ss.t0 is None
-                else '<span class="pill p-mint">Guard protected</span>' if ss.choice and ss.t0 is None and ss.flag_on
-                else '<span class="pill p-grey">Scheduled</span>' if ss.t0 is None
-                else '<span class="pill p-coral">Debit failed</span>' if ss.t0 == "failed" and not ss.paid_after
-                else '<span class="pill p-mint">Done</span>')
-        st.markdown(f'<div class="debit"><div><div class="amt">{inr(DUE)}</div><div class="sub">{len(FUNDS)} SIPs · '
-                    f'{DEBIT_DATE} · AutoPay mandate on {BANK}</div></div>{pill}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="h3" style="margin:2px 0 10px 2px">Running SIPs <span class="sub">· {len(SIPS)} active · '
+                f'{inr(sum(s["amt"] for s in SIPS))}/month</span></div>', unsafe_allow_html=True)
 
-        # ---- before debit day ----
+    # ---- SIP 1: the guarded debit ----
+    g = GUARDED
+    with keyed(f"sip_{g['id']}"):
         if ss.t0 is None:
             if guard_on and not ss.choice:
-                st.markdown(f'<div class="alert"><div class="t">{esc(t("alert_t", date=DEBIT_DATE))}</div><div class="b">'
-                            f'{esc(t("alert_b", amt=inr(DUE), date=DEBIT_DATE, n=len(FUNDS), bank=BANK))}</div>'
-                            f'<div class="fee">{esc(t("alert_fee"))}</div></div>',
-                            unsafe_allow_html=True)
-                c1, c2 = st.columns(2)
-                with c1:
-                    if st.button(t("o_pay"), use_container_width=True, key="o_pay"):
-                        upi_dialog()
-                    st.button(t("o_shift"), use_container_width=True, key="o_shift", on_click=choose, args=("shift",))
-                with c2:
-                    st.button(t("o_skip"), use_container_width=True, key="o_skip", on_click=choose, args=("skip",))
-                    st.button(t("o_keep"), use_container_width=True, key="o_keep", on_click=choose, args=("keep",))
-                st.markdown(f'<div class="sub">{esc(t("o_note"))}</div>', unsafe_allow_html=True)
-                st.markdown(tracker([("Notified", "done"), ("Scheduled", ""), ("Guard Protected", "")]),
+                pill = '<span class="pill p-amber">Needs a look</span>'
+            elif ss.choice and ss.flag_on:
+                pill = f'<span class="pill p-mint">{esc(fmt(STATUS[ss.choice]))}</span>'
+            else:
+                pill = '<span class="pill p-grey">Scheduled</span>'
+        elif ss.t0 == "failed" and not ss.paid_after:
+            pill = '<span class="pill p-red">Debit failed</span>'
+        else:
+            pill = '<span class="pill p-mint">Invested</span>'
+        next_label = dmy(g["next"]) + (f" · then {ordinal(ss.shift_day)}" if ss.choice == "shift" else "")
+        st.markdown(
+            f'<div class="siphead"><div style="display:flex;gap:12px;align-items:center"><span class="fundico">'
+            f'{g["short"]}</span><div><div class="fn">{esc(g["name"])}</div><div class="sub">{esc(g["plan"])} · '
+            f'{esc(g["cat"])}</div></div></div>{pill}</div>'
+            f'<div class="meta3"><div><div class="k">SIP amount</div><div class="v">{inr(g["amt"])}/mo</div></div>'
+            f'<div><div class="k">Next debit</div><div class="v">{next_label}</div></div>'
+            f'<div><div class="k">AutoPay</div><div class="v">{esc(g["bank"])}</div></div></div>',
+            unsafe_allow_html=True)
+
+        if ss.t0 is None:                                           # ---- before debit day ----
+            if guard_on and not ss.choice:
+                st.markdown(
+                    f'<div class="guard"><div class="t">{esc(fmt(t("notice_t", date="{date}")))}</div>'
+                    f'<div class="b">{esc(fmt(t("notice_b", amt="{amt}", fund="{fund}", date="{date}", bank="{bank}")))}'
+                    f'</div><div class="fee">{esc(t("notice_fee"))}</div>'
+                    + (f'<div class="b" style="color:#B91C1C">{esc(t("rogue"))}</div>' if "rogue" in shown else "")
+                    + '</div>', unsafe_allow_html=True)
+                if st.button("Resolve in 1 tap", type="primary", use_container_width=True, key="resolve"):
+                    action_sheet()
+                st.markdown(tracker([(f"Notified {dmy(TODAY)}", "done"), ("Your choice", ""),
+                                     (f"Debit day {dmy(g['next'])}", ""), ("Units allotted", "")]),
                             unsafe_allow_html=True)
             elif ss.choice and ss.flag_on:
-                msg = CONFIRM[ss.choice].format(amt=inr(DUE), date=DEBIT_DATE, next=NEXT_DATE, bank=BANK)
-                st.markdown(f'<div class="ok">{msg}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="ok">{fmt(CONFIRM[ss.choice])}</div>', unsafe_allow_html=True)
+                if ss.choice == "skip":
+                    st.caption(t("skip_rule", used=ss.prior_skips + 1))
                 if ss.choice in ("shift", "keep"):
-                    ss.balance_added = st.checkbox(f"I've added {inr(DUE)} to my bank account",
+                    ss.balance_added = st.checkbox(f"I've added {inr(g['amt'])} to {g['bank']}",
                                                    value=ss.balance_added, key="bal_chk")
-                st.markdown(tracker([("Notified", "done"), ("Scheduled", "done"), ("Guard Protected", "done")]),
+                st.markdown(tracker([(f"Notified {dmy(TODAY)}", "done"), ("Your choice", "done"),
+                                     (f"Debit day {dmy(g['next'])}", ""), ("Units allotted", "")]),
                             unsafe_allow_html=True)
             elif ss.flag_on and band == "unsure":
-                st.markdown(f'<div class="info">🔔 {esc(t("fallback", amt=inr(DUE), bank=BANK, date=DEBIT_DATE))}'
-                            '</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="info">🔔 {esc(fmt(t("reminder", amt="{amt}", bank="{bank}", date="{date}")))}'
+                            '<div class="sub" style="margin-top:6px">Safe fallback: the model was not confident '
+                            'enough for a SIP Guard notice.</div></div>', unsafe_allow_html=True)
             elif ss.flag_on and band == "high" and not gates_ok:
-                st.markdown(f'<div class="info">🔔 {esc(t("fallback", amt=inr(DUE), bank=BANK, date=DEBIT_DATE))}'
+                st.markdown(f'<div class="info">🔔 {esc(fmt(t("reminder", amt="{amt}", bank="{bank}", date="{date}")))}'
                             '<div class="sub" style="margin-top:6px">An eval gate failed, so SIP Guard fell back to '
                             'the standard reminder.</div></div>', unsafe_allow_html=True)
             else:
-                st.markdown(f'<div class="info">Auto-debit scheduled for {DEBIT_DATE}. No action needed.</div>',
+                st.markdown(f'<div class="info">Auto-debit scheduled for {dmy(g["next"])}. No action needed.</div>',
                             unsafe_allow_html=True)
-            st.button(f"⏩ Simulate debit day ({DEBIT_DATE})", use_container_width=True, on_click=simulate_debit_day,
-                      key="sim_t0")
-
-        # ---- debit day ----
-        else:
+            st.button(f"⏩ Simulate debit day ({dmy(g['next'])})", use_container_width=True,
+                      on_click=simulate_debit_day, key="sim_t0")
+        else:                                                       # ---- debit day ----
             if ss.t0 == "not_presented":
-                st.markdown(f'<div class="ok">✓ No debit presented to {BANK} on {DEBIT_DATE}. '
-                            + (f"{inr(DUE)} invested via UPI." if ss.choice == "skip_pay" else
-                               f"Instalments skipped; next debit {NEXT_DATE}.")
-                            + ' No bank charge.</div>', unsafe_allow_html=True)
-                st.markdown(tracker([("Notified", "done"), ("Scheduled", "done"), ("Guard Protected", "done")]),
+                st.markdown(f'<div class="ok">✓ Nothing was presented to {esc(g["bank"])} on {dmy(g["next"])}, so '
+                            'there was no bounce and no bank charge. '
+                            + (f'{inr(g["amt"])} was invested via UPI.' if ss.choice == "upi"
+                               else f'Instalment skipped; next debit {dmy(g["after"])}.') + '</div>',
                             unsafe_allow_html=True)
+                st.markdown(tracker([("Notified", "done"), ("Your choice", "done"), ("Not presented", "done"),
+                                     ("₹0 charge", "done")]), unsafe_allow_html=True)
             elif ss.t0 == "success" or ss.paid_after:
-                st.markdown(f'<div class="ok">✓ {inr(DUE)} '
-                            + ("paid via UPI after the failed debit." if ss.paid_after else f"debited from {BANK}.")
-                            + ' Units are being allotted.</div>', unsafe_allow_html=True)
-                st.markdown(tracker([("Scheduled", "done"), ("Debited", "done"), ("Units allotted", "done")]),
+                st.markdown(f'<div class="ok">✓ {inr(g["amt"])} '
+                            + ("paid via UPI after the failed debit." if ss.paid_after
+                               else f'debited from {esc(g["bank"])}.') + ' Units are being allotted.</div>',
+                            unsafe_allow_html=True)
+                st.markdown(tracker([("Scheduled", "done"), ("Paid", "done"), ("Units allotted", "done")]),
                             unsafe_allow_html=True)
             elif not ss.flag_on or not gates_ok:
-                st.markdown('<div class="fail"><b>SIP instalment failed.</b> Status: Failed.</div>'
-                            '<div class="sub" style="margin-top:6px">Without SIP Guard: no warning beforehand and '
-                            'no explanation after. Your bank may charge ₹295–885 per SIP, and three misses in a row '
-                            'cancel a SIP.</div>', unsafe_allow_html=True)
+                st.markdown('<div class="fail"><b>SIP instalment failed.</b></div>'
+                            '<div class="sub" style="margin-top:6px">Standard behaviour without SIP Guard: no warning '
+                            'beforehand. The bank may charge ₹295–₹885 incl. GST, and 3 failed instalments in a row '
+                            'cancel the SIP.</div>', unsafe_allow_html=True)
+                st.markdown(tracker([("Scheduled", "done"), ("Debit bounced", "bad"), ("Miss 1 of 3", "bad")]),
+                            unsafe_allow_html=True)
             else:
-                st.markdown(f'<div class="fail">{esc(t("recovery", date=DEBIT_DATE))}</div>', unsafe_allow_html=True)
-                st.button(f"Pay {inr(DUE)} via UPI to invest this month", type="primary", use_container_width=True,
-                          on_click=pay_after_failure, key="pay_after")
-                with st.expander("Why did this happen?"):
-                    st.write("Insufficient balance in your bank account when the debit was processed.")
-                st.markdown(tracker([("Scheduled", "done"), ("Debit failed", "bad"), ("No auto-retry", "done")]),
+                st.markdown(f'<div class="fail">{esc(fmt(t("recovery", date="{date}")))}</div>', unsafe_allow_html=True)
+                st.button(f"Pay {inr(g['amt'])} via UPI to invest this month", type="primary",
+                          use_container_width=True, on_click=pay_after_failure, key="pay_after")
+                st.markdown(tracker([("Scheduled", "done"), ("Debit bounced", "bad"), ("Recover via UPI", "")]),
                             unsafe_allow_html=True)
             st.button("↺ Replay from T-3", use_container_width=True, on_click=reset, key="replay")
 
-    # ---- SIP list ----
-    rows = []
-    for f in FUNDS:
-        rows.append(
-            f'<div class="fund"><div><div class="nm">{esc(f["name"])}</div><div class="tags">{esc(f["tags"])}</div>'
-            f'</div><div>{sparkline(f["series"])}</div>'
-            f'<div class="hide-sm"><div class="num up">{f["ret3y"]:.2f}%</div><div class="lab">3Y annualised</div></div>'
-            f'<div><div class="num">{inr(f["sip"])}</div><div class="lab">SIP · '
-            f'{DEBIT_DATE if ss.choice not in ("shift",) else "5 Nov, then 8th"}</div></div></div>')
-    st.markdown(f'<div class="card"><h3>Your SIPs</h3><div class="sub">{len(FUNDS)} active · '
-                f'{inr(DUE)} per month</div>{"".join(rows)}</div>', unsafe_allow_html=True)
+    # ---- SIP 2: low risk, no intervention ----
+    n = SIPS[1]
+    with keyed(f"sip_{n['id']}"):
+        st.markdown(
+            f'<div class="siphead"><div style="display:flex;gap:12px;align-items:center"><span class="fundico">'
+            f'{n["short"]}</span><div><div class="fn">{esc(n["name"])}</div><div class="sub">{esc(n["plan"])} · '
+            f'{esc(n["cat"])}</div></div></div><span class="pill p-grey">Scheduled</span></div>'
+            f'<div class="meta3"><div><div class="k">SIP amount</div><div class="v">{inr(n["amt"])}/mo</div></div>'
+            f'<div><div class="k">Next debit</div><div class="v">{dmy(n["next"])}</div></div>'
+            f'<div><div class="k">AutoPay</div><div class="v">{esc(n["bank"])}</div></div></div>',
+            unsafe_allow_html=True)
 
-# ----------------------------------------------------------------------------------------------------------------
-# Side: mandate card, or the evaluator panel
-# ----------------------------------------------------------------------------------------------------------------
+    # ---- Holdings ----
+    rows = "".join(
+        f'<div style="display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-top:1px solid {BORDER}">'
+        f'<div><div class="fn" style="font-size:14px">{esc(s["name"])}</div><div class="sub">{s["paid"]} instalments '
+        f'paid</div></div><div style="text-align:right"><div class="fn" style="font-size:14px">{inr(s["current"])}</div>'
+        f'<div class="sub">Invested {inr(s["invested"])}</div></div></div>' for s in SIPS)
+    st.markdown(f'<div class="card"><h3>Your holdings</h3>{rows}</div>', unsafe_allow_html=True)
+
+    if ss.log:
+        with st.expander("Activity log (this session)"):
+            for e in ss.log:
+                st.write("• " + e)
+
+# =================================================================================================================
+# RENDER · SIDE: SIP GUARD INFO, or MODULE 4: EVALUATOR TELEMETRY DRAWER
+# =================================================================================================================
 with side:
     if not ss.eval_mode:
         st.markdown(
-            f'<div class="card"><h3>AutoPay mandate</h3><div class="sub">{BANK} · active</div>'
-            f'<div style="margin-top:10px;font-size:13.5px;color:{BODY};line-height:1.7">'
-            f'Max per debit: ₹10,000<br>SIPs on this mandate: {len(FUNDS)}<br>Next debit: {DEBIT_DATE}</div></div>'
-            f'<div class="card"><h3>🛡️ SIP Guard</h3><div class="sub">Checks every upcoming debit three days early. '
-            f'If one looks likely to fail, you get one alert and a one-tap fix before your bank can charge you. '
-            f'It never suggests funds or amounts.</div><div style="margin-top:10px">'
-            f'<span class="pill {"p-mint" if ss.flag_on else "p-grey"}">{"On" if ss.flag_on else "Off"}</span>'
-            f'</div></div>', unsafe_allow_html=True)
+            f'<div class="card"><h3>🛡️ SIP Guard</h3><div class="sub">Checks each upcoming AutoPay debit 3 days early. '
+            f'If one looks likely to fail, you get one notice with 1-tap options while they are still free. It only '
+            f'changes how this month\'s money moves, never which fund or how much.</div><div style="margin-top:10px">'
+            f'<span class="pill {"p-mint" if ss.flag_on else "p-grey"}">{"On" if ss.flag_on else "Off"}</span></div>'
+            f'</div>'
+            f'<div class="card"><h3>AutoPay mandates</h3><div class="sub" style="font-size:13px;line-height:1.8">'
+            + "".join(f'{esc(s["bank"])} · {esc(s["name"].split(" Fund")[0])} · {ordinal(s["day"])}<br>' for s in SIPS)
+            + '</div></div>', unsafe_allow_html=True)
     else:
         with keyed("evaluator"):
-            st.markdown('<h3 style="margin:0;font-size:16px">Evaluator mode</h3><div class="sub">Why this is '
-                        'AI-native and fails safe. All model figures are simulated.</div>', unsafe_allow_html=True)
-            st.toggle("Feature flag: SIP Guard enabled", key="flag_on")
-            st.radio("Model output for this account", list(SCENARIOS), key="scenario", horizontal=True,
-                     format_func=lambda k: SCENARIOS[k]["label"], on_change=reset)
-
-            tele = "".join(f'<div class="tele"><span>{esc(n)}</span><span class="v">+{v}%</span>'
-                           f'<div class="bar"><span style="width:{v / 40 * 100:.0f}%"></span></div></div>'
-                           for n, v in sc["factors"])
-            verdict = ("p-coral", "HIGH RISK · T-3 alert") if band == "high" else (
-                ("p-amber", "INCONCLUSIVE · T-1 reminder") if band == "unsure" else ("p-mint", "LOW RISK · silent"))
-            st.markdown(f'<div style="margin-top:6px"><div class="sub" style="font-weight:600;color:{INK}">Feature '
-                        f'input telemetry</div>{tele}<div class="prob"><b>{prob}%</b><span class="sub">total failure '
-                        f'probability</span></div><span class="pill {verdict[0]}">{verdict[1]}</span>'
-                        f'<div class="sub" style="margin-top:6px">Thresholds: ≥ {ALERT_AT}% alert · '
-                        f'{FALLBACK_AT}–{ALERT_AT - 1}% standard reminder · below {FALLBACK_AT}% silent.</div></div>',
+            st.markdown('<div class="h3">🔍 Evaluator telemetry</div><div class="sub">Inspect the AI eval-gate '
+                        'architecture. Model figures are computed live on synthetic data.</div>',
                         unsafe_allow_html=True)
+            st.toggle("Feature flag: Enable SIP Guard system", key="flag_on",
+                      help="Kill switch. Off = standard Groww behaviour: no predictions, no notices.")
+            tab_m, tab_g, tab_d, tab_c = st.tabs(["Model", "Eval gates", "Golden Set", "Controls"])
 
-            gate_html = "".join(f'<div class="gate"><div><div class="t">{esc(n)}</div><div class="d">{esc(d)}</div>'
-                                f'</div><span class="pill {"p-mint" if ok else "p-coral"}">{"PASSED" if ok else "FAILED"}'
-                                f'</span></div>' for n, ok, d in gates)
-            st.markdown(f'<div style="margin-top:14px"><div class="sub" style="font-weight:600;color:{INK}">Eval '
-                        f'gates</div>{gate_html}</div>', unsafe_allow_html=True)
-            st.toggle("Demo: inject an unapproved marketing message", key="rogue")
-            with st.expander("How SIP Guard meets the project constraints"):
-                st.markdown(CONSTRAINTS_MD)
-            st.markdown('<div class="sub" style="margin-top:8px">Data: the mandate\'s own debit history; bank balance '
-                        'only with Account Aggregator consent; never SMS. Built for DPDP notice and purpose limits and '
-                        'SEBI\'s expected AI rules on accountability, oversight and kill switches.</div>',
-                        unsafe_allow_html=True)
+            with tab_m:
+                verdict = {"high": ("p-red", "≥ 60% · T-3 SIP Guard notice"),
+                           "unsure": ("p-amber", "30–59% · safe fallback: T-1 reminder"),
+                           "low": ("p-mint", "< 30% · no message")}[band]
+                st.markdown(f'<div class="prob"><b>{p_live:.0%}</b><span class="sub">failure probability · '
+                            f'{esc(GUARDED["name"])}, {dmy(GUARDED["next"])}</span></div>'
+                            f'<span class="pill {verdict[0]}">{verdict[1]}</span>'
+                            f'<div class="sub" style="margin-top:6px">{esc(SIPS[1]["name"])}, '
+                            f'{dmy(SIPS[1]["next"])}: {p_nippon:.0%} → no message.</div>', unsafe_allow_html=True)
+                top = max(d for _, _, d in drivers(x_live)) or 1
+                tele = "".join(
+                    f'<div class="tele"><span>{esc(nm)} <span class="sub">({esc(v)})</span></span>'
+                    f'<span class="v">{d * 100:+.0f} pts</span><div class="bar"><span style="width:'
+                    f'{max(d, 0) / top * 100:.0f}%"></span></div></div>' for nm, v, d in drivers(x_live))
+                st.markdown(f'<div style="margin-top:12px"><div class="sub" style="font-weight:600;color:{NAVY}">'
+                            f'What drives this score</div>{tele}<div class="sub" style="margin-top:6px">Points = score '
+                            f'drop if that input were typical (median).</div></div>', unsafe_allow_html=True)
+                st.markdown(
+                    f'<div class="sub" style="margin-top:12px"><b style="color:{NAVY}">Model card.</b> '
+                    f'Gradient-boosted trees (scikit-learn, 150 trees, depth 3) trained on {MODEL["train_rows"]:,} '
+                    f'synthetic debits; base failure rate {MODEL["base_rate"]:.0%}. Backtest at the 60% threshold: '
+                    f'precision {MODEL["precision"]:.1%}, recall {MODEL["recall"]:.1%}, {MODEL["alerts"]:,} notices. '
+                    f'Inputs: the mandate\'s debit history plus balance and spending signals that would need '
+                    f'Account Aggregator consent in production. Never SMS.</div>', unsafe_allow_html=True)
 
-st.markdown('<div class="note">Concept prototype for a NextLeap product-management capstone. Not affiliated with '
-            'or endorsed by Groww. The investor, portfolio, fund names, NAVs, returns and model figures are '
-            'illustrative. Bank bounce charges: ₹250–750 + 18% GST per failed debit, per public reporting.</div>',
-            unsafe_allow_html=True)
+            with tab_g:
+                gate_html = "".join(
+                    f'<div class="gate"><div><div class="t">{esc(nm)}</div><div class="d">{esc(d)}</div></div>'
+                    f'<span class="pill {"p-mint" if ok else "p-red"}">{"PASS" if ok else "FAIL"}</span></div>'
+                    for nm, ok, d in GATES)
+                st.markdown(gate_html, unsafe_allow_html=True)
+                st.markdown(f'<div class="sub" style="margin-top:8px">{"All gates pass: SIP Guard may speak." if gates_ok else "A gate failed: SIP Guard is silenced and the app falls back to the standard reminder."}'
+                            '</div>', unsafe_allow_html=True)
+
+            with tab_d:
+                st.markdown(
+                    "| Discovery Engine finding | Evidence | How SIP Guard uses it |\n"
+                    "| --- | --- | --- |\n"
+                    "| Bank & auto-debit friction is #1 | 155 of 445 themed reviews (35%) | The event predicted: a bounced AutoPay debit |\n"
+                    "| Operational friction dominates | 276 of 445 (62%) | Scope is operational fixes only |\n"
+                    "| Market return fear | 48 of 445 (11%) | Out of scope; market copy blocked by Gate 3 |\n"
+                    "| Bounce charges | ₹295–₹885 incl. GST | Shown once, as information |\n"
+                    "| 3 failed instalments in a row cancel a SIP | AMC uniform rule | Skip counter shown (x of 3) |\n"
+                    "| Survey: 7 of 17 ran short of cash | Money shortage, overspending, expenses | Balance-cover and spending inputs |\n"
+                    "| Survey: only 3 of 17 check debit status | Failures are invisible | Notice arrives at T-3, unprompted |")
+                st.caption("Grounded in the Discovery Engine's 680 records and 83-case golden set. The golden-set "
+                           "file itself is not bundled in this app.")
+
+            with tab_c:
+                st.radio("Ritu's situation this month (changes the model inputs)", list(SCENARIOS), key="scenario",
+                         format_func=lambda k: SCENARIOS[k]["label"], on_change=reset)
+                st.toggle("Inject an unapproved marketing message (tests Gates 3, 5 and 6)", key="rogue")
+                st.number_input("Consecutive skips/misses before this month", 0, 2, key="prior_skips")
+                if st.button("↺ Reset demo", use_container_width=True):
+                    reset()
+                    st.rerun()
+
+st.markdown('<div class="note">Concept prototype for a NextLeap product-management capstone. Not affiliated with or '
+            'endorsed by Groww. Investor, portfolio and bank accounts are fictional; fund names are labels only. The '
+            'risk model is trained on synthetic data. Bank bounce charges: ₹250–₹750 + 18% GST per failed debit, per '
+            'public bank fee schedules.</div>', unsafe_allow_html=True)
