@@ -16,6 +16,14 @@ What is real and what is simulated
 - Evidence figures (680 records, 83-case golden set, 35% / 62% / 11%, ₹295–₹885 bounce charges) come from the
   Groww SIP Discovery Engine and public bank fee schedules.
 
+How SIP Guard knows a debit may fail (the "data tiers")
+- Tier 1 · Mandate history (first-party, no extra consent): NACH / UPI AutoPay return codes on this mandate, e.g.
+  "insufficient funds". Groww already receives these for every SIP.
+- Tier 2 · Account Aggregator (RBI AA framework, explicit purpose-bound consent): balance and spending around the
+  debit date. Only with this tier may the notice say anything about the investor's balance.
+- Evaluators can switch AA consent off: the app retrains on mandate history only, shows the honest backtest, and
+  SIP Guard falls back to an evidence-based reminder instead of guessing.
+
 Concept prototype for a NextLeap capstone. Not affiliated with or endorsed by Groww.
 """
 from __future__ import annotations
@@ -116,6 +124,18 @@ html, body, .stApp, .stApp *:not([data-testid="stIconMaterial"]):not(.material-s
 .fail {{ border: 1px solid #FECACA; background: #FEE2E2; border-radius: 14px; padding: 12px 16px; font-size: 13.5px;
   color: #7F1D1D; line-height: 1.55; margin-top: 12px; }}
 
+/* debit-history strip + "your SIP so far" (evidence the investor can verify) */
+.hist {{ display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; margin: 12px 0 4px 0; }}
+.hist div {{ text-align: center; font-size: 11.5px; color: {META}; }}
+.hist i {{ display: flex; align-items: center; justify-content: center; height: 26px; border-radius: 8px;
+  font-style: normal; font-weight: 700; font-size: 13px; margin-bottom: 3px; }}
+.hist .y i {{ background: #E6FAF5; color: {MINT_TXT}; }} .hist .n i {{ background: #FDE68A; color: #92400E; }}
+.hist .n {{ color: #92400E; font-weight: 600; }}
+.stake {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; background: {WHITE};
+  border: 1px solid #FDE68A; border-radius: 10px; padding: 8px 12px; margin-top: 10px; }}
+.stake .k {{ font-size: 11.5px; color: {META}; }} .stake .v {{ font-size: 14px; font-weight: 700; color: {NAVY}; }}
+.guard .src {{ font-size: 11.5px; color: {META}; margin-top: 8px; border-top: 1px dashed #FDE68A; padding-top: 8px; }}
+
 /* status timeline */
 .track {{ display: flex; align-items: flex-start; margin: 14px 0 6px 0; }}
 .track .s {{ display: flex; flex-direction: column; align-items: center; gap: 4px; flex: 0 0 auto; font-size: 11.5px;
@@ -184,11 +204,13 @@ SKIP_CUTOFF_DAYS = 2                 # Groww: a skip within 2 days of the instal
 SIPS = [
     {"id": "ppfas", "short": "PP", "name": "Parag Parikh Flexi Cap Fund", "plan": "Direct Growth",
      "cat": "Equity · Flexi Cap", "amt": 2500, "day": 5, "bank": "HDFC Bank ••4821", "invested": 30000,
-     "current": 34180, "paid": 12},
+     "current": 34180, "paid": 12, "since": "Sep 2025"},
     {"id": "nippon", "short": "NI", "name": "Nippon India Small Cap Fund", "plan": "Direct Growth",
      "cat": "Equity · Small Cap", "amt": 1500, "day": 12, "bank": "ICICI Bank ••7730", "invested": 18000,
-     "current": 20050, "paid": 12},
+     "current": 20050, "paid": 12, "since": "Nov 2025"},
 ]
+AA_LINK = {"bank": "HDFC Bank ••4821", "via": "Account Aggregator", "purpose": "Warn you before SIP debits that "
+           "may fail", "till": "31 Mar 2027"}  # fictional consent artefact shown to the investor
 DAY_GAIN = 312
 for s_ in SIPS:
     s_["next"] = date(2026, 11, s_["day"])
@@ -199,6 +221,7 @@ GUARDED = SIPS[0]  # the debit SIP Guard is protecting in this demo
 # MODULE 4a · RISK MODEL (trained on synthetic debit logs) + BACKTEST
 # =================================================================================================================
 FEATURES = ["bal_cover", "spend_vs_usual", "fails_6m", "lowbal_months_6m", "debit_day", "debits_same_day"]
+MANDATE_FEATURES = ["fails_6m", "debit_day", "debits_same_day"]   # Tier 1: Groww already has these, no AA needed
 FEATURE_LABEL = {
     "bal_cover": "Projected balance on debit day ÷ SIP amount",
     "spend_vs_usual": "Spending this month vs usual",
@@ -209,6 +232,7 @@ FEATURE_LABEL = {
 }
 ALERT_AT, FALLBACK_AT = 0.60, 0.30   # ≥60%: T-3 SIP Guard notice · 30–59%: standard T-1 reminder · <30%: silent
 PRECISION_FLOOR = 0.60
+COVERAGE_FLOOR = 0.20                # the notice must reach ≥20% of real failures, or it isn't worth shipping
 FAIRNESS_MAX_GAP = 0.10              # max precision gap between PSU and private banks
 
 
@@ -236,59 +260,71 @@ def synthetic_debit_logs(seed: int = 42, n_users: int = 1500, months: int = 12) 
 
 
 @st.cache_resource(show_spinner="Training the SIP Guard risk model on synthetic debit logs…")
-def train_and_backtest() -> dict:
+def train_and_backtest(features: tuple[str, ...] = tuple(FEATURES)) -> dict:
+    features = list(features)
     df = synthetic_debit_logs()
     train, test = df[df.month <= 9], df[df.month >= 10]          # time split: no peeking at the future
     model = GradientBoostingClassifier(n_estimators=150, max_depth=3, learning_rate=0.08, random_state=7)
-    model.fit(train[FEATURES], train.failed)                     # bank type is NOT a feature (used only to audit)
-    p = model.predict_proba(test[FEATURES])[:, 1]
+    model.fit(train[features], train.failed)                     # bank type is NOT a feature (used only to audit)
+    p = model.predict_proba(test[features])[:, 1]
     flag = p >= ALERT_AT
     by_bank = {}
     for b in ("PSU", "Private"):
         k = (test.bank_type == b).to_numpy()
         by_bank[b] = float(precision_score(test.failed[k], flag[k], zero_division=0))
     return {
-        "model": model,
+        "model": model, "features": features,
         "rows": len(df), "train_rows": len(train), "test_rows": len(test),
         "base_rate": float(df.failed.mean()),
         "precision": float(precision_score(test.failed, flag, zero_division=0)),
         "recall": float(recall_score(test.failed, flag, zero_division=0)),
         "alerts": int(flag.sum()),
         "by_bank": by_bank,
-        "medians": train[FEATURES].median().to_dict(),
+        "medians": train[features].median().to_dict(),
     }
 
 
-MODEL = train_and_backtest()
+MODELS = {"aa": train_and_backtest(tuple(FEATURES)), "mandate": train_and_backtest(tuple(MANDATE_FEATURES))}
 
-# Ritu's live feature vectors for the 5 Nov debit (evaluators can switch scenario to test the gates)
+# Ritu's live feature vectors for the 5 Nov debit (evaluators can switch scenario to test the gates).
+# "hist" = the last 6 debits on this mandate (first-party NACH / AutoPay return data); it matches fails_6m.
 SCENARIOS = {
     "high": {"label": "Cash crunch this month",
              "x": {"bal_cover": 0.40, "spend_vs_usual": 1.60, "fails_6m": 2, "lowbal_months_6m": 5, "debit_day": 5,
-                   "debits_same_day": 1}},
+                   "debits_same_day": 1},
+             "hist": [("May", 1), ("Jun", 0), ("Jul", 1), ("Aug", 1), ("Sep", 0), ("Oct", 1)]},
     "unsure": {"label": "Borderline",
                "x": {"bal_cover": 0.70, "spend_vs_usual": 1.35, "fails_6m": 1, "lowbal_months_6m": 3, "debit_day": 5,
-                     "debits_same_day": 1}},
+                     "debits_same_day": 1},
+               "hist": [("May", 1), ("Jun", 1), ("Jul", 1), ("Aug", 0), ("Sep", 1), ("Oct", 1)]},
     "low": {"label": "Healthy balance",
             "x": {"bal_cover": 3.00, "spend_vs_usual": 0.90, "fails_6m": 0, "lowbal_months_6m": 0, "debit_day": 5,
-                  "debits_same_day": 1}},
+                  "debits_same_day": 1},
+            "hist": [("May", 1), ("Jun", 1), ("Jul", 1), ("Aug", 1), ("Sep", 1), ("Oct", 1)]},
 }
 NIPPON_X = {"bal_cover": 3.2, "spend_vs_usual": 1.0, "fails_6m": 0, "lowbal_months_6m": 0, "debit_day": 12,
             "debits_same_day": 1}
 
 
-def score(x: dict) -> float:
-    return float(MODEL["model"].predict_proba(pd.DataFrame([x], columns=FEATURES))[0, 1])
+def active_model() -> dict:
+    """Tier 2 model when the investor has given AA consent, otherwise the mandate-history-only model."""
+    return MODELS["aa" if st.session_state.get("aa_consent", True) else "mandate"]
+
+
+def score(x: dict, m: dict | None = None) -> float:
+    m = m or active_model()
+    return float(m["model"].predict_proba(pd.DataFrame([x])[m["features"]])[0, 1])
 
 
 def drivers(x: dict) -> list[tuple[str, str, float]]:
     """How much each feature raises the score vs a typical (median) investor: p(x) − p(x with feature at median)."""
-    base = score(x)
+    m = active_model()
+    base = score(x, m)
     out = []
-    for f in FEATURES:
+    for f in m["features"]:
         x2 = dict(x)
-        x2[f] = MODEL["medians"][f]
-        out.append((FEATURE_LABEL[f], f"{x[f]:g}", base - score(x2)))
+        x2[f] = m["medians"][f]
+        out.append((FEATURE_LABEL[f], f"{x[f]:g}", base - score(x2, m)))
     return sorted(out, key=lambda r: -r[2])
 
 
@@ -296,13 +332,32 @@ def drivers(x: dict) -> list[tuple[str, str, float]]:
 # APPROVED COPY LIBRARY (the app only fills slots; nothing is free-generated) + LINT RULES
 # =================================================================================================================
 TEMPLATES = {
-    "notice_t": {"ok": True, "text": "🛡️ SIP Guard: your {date} debit may not go through"},
-    "notice_b": {"ok": True, "text": "Your {amt} debit for {fund} on {date} ({bank}) may not go through. In recent "
-                                     "months your balance has been low around this date. Here are some ways to "
-                                     "handle it. Nothing changes unless you choose."},
+    # Every factual claim in the notice maps to a data source the investor can see on the card:
+    #   "{fails} of your last 6 debits"  -> mandate return history (Tier 1, shown as the 6-month strip)
+    #   "balance was below {amt} ..."    -> Account Aggregator data (Tier 2, consent named in the source line)
+    "notice_t": {"ok": True, "text": "🛡️ SIP Guard: a heads-up on your {date} debit"},
+    "notice_b": {"ok": True, "text": "Your {amt} debit for {fund} on {date} ({bank}) may not go through. {fails} of "
+                                     "your last 6 debits on this mandate didn't go through, and in {lowbal} of the "
+                                     "last 6 months your balance was below {amt} around the {day_of}. Pick an option "
+                                     "below while all of them are free. Nothing changes unless you choose."},
+    "notice_b_mandate": {"ok": True, "text": "Your {amt} debit for {fund} on {date} ({bank}) may not go through. "
+                                             "{fails} of your last 6 debits on this mandate didn't go through due "
+                                             "to low balance. Pick an option below while all of them are free. "
+                                             "Nothing changes unless you choose."},
+    "notice_hist": {"ok": True, "text": "Your last 6 debits for this SIP"},
+    "notice_stake": {"ok": True, "text": "Skipping one month keeps your SIP running. If 3 instalments in a row are "
+                                         "missed or skipped, the fund house stops the SIP and you'd need a new "
+                                         "mandate to restart."},
     "notice_fee": {"ok": True, "text": "For reference: if a debit fails, banks usually charge ₹295–₹885 incl. GST."},
+    "notice_src": {"ok": True, "text": "Why you're seeing this: your debit history on this mandate, plus {bank} "
+                                       "balance data you shared via Account Aggregator (consent till {till}). We "
+                                       "never read SMS."},
+    "notice_src_mandate": {"ok": True, "text": "Why you're seeing this: the debit history on this mandate, as "
+                                               "reported by {bank}. We never read SMS."},
     "reminder": {"ok": True, "text": "Reminder: {amt} will be debited from {bank} on {date}. Please keep enough "
                                      "balance."},
+    "reminder_hist": {"ok": True, "text": "{fails} of your last 6 debits for this SIP didn't go through. Reminder: "
+                                          "{amt} will be debited from {bank} on {date}."},
     "o_upi": {"ok": True, "text": "⚡ Skip this month's AutoPay & pay via UPI"},
     "o_upi_d": {"ok": True, "text": "Pay {amt} from any UPI app or another bank. The {date} AutoPay debit is not sent "
                                     "to {bank}, so it can't bounce."},
@@ -377,6 +432,7 @@ ss.setdefault("eval_mode", False)
 ss.setdefault("scenario", "high")
 ss.setdefault("rogue", False)
 ss.setdefault("prior_skips", 0)        # consecutive skips/misses before this instalment
+ss.setdefault("aa_consent", True)      # Tier 2 data: Account Aggregator consent for HDFC ••4821
 ss.setdefault("log", [])
 ss.setdefault("pending_toast", None)   # toasts raised inside the dialog survive its st.rerun()
 if ss.pending_toast:
@@ -385,9 +441,16 @@ if ss.pending_toast:
 
 
 def fmt(x: str) -> str:
+    xs = SCENARIOS[ss.scenario]["x"]
     return x.format(amt=inr(GUARDED["amt"]), date=dmy(GUARDED["next"]), after=dmy(GUARDED["after"]),
                     bank=GUARDED["bank"], fund=GUARDED["name"], day=ordinal(ss.shift_day),
-                    t1=dmy(GUARDED["next"] - timedelta(days=1)))
+                    t1=dmy(GUARDED["next"] - timedelta(days=1)), fails=int(xs["fails_6m"]),
+                    lowbal=int(xs["lowbal_months_6m"]), day_of=ordinal(GUARDED["day"]), till=AA_LINK["till"])
+
+
+def tf(key: str) -> str:
+    """Approved template with every slot filled from the live account (no free text)."""
+    return fmt(TEMPLATES[key]["text"])
 
 
 def log(event: str) -> None:
@@ -427,14 +490,19 @@ def pay_after_failure() -> None:
 # =================================================================================================================
 # MODULE 4b · EVAL GATES (computed before rendering: they decide what the investor is allowed to see)
 # =================================================================================================================
+MODEL = active_model()
 x_live = SCENARIOS[ss.scenario]["x"]
+hist_live = SCENARIOS[ss.scenario]["hist"]
 p_live = score(x_live)
 band = "high" if p_live >= ALERT_AT else ("unsure" if p_live >= FALLBACK_AT else "low")
 p_nippon = score(NIPPON_X)
+model_ok = MODEL["precision"] >= PRECISION_FLOOR and MODEL["recall"] >= COVERAGE_FLOOR
 
 shown = []
 if ss.flag_on and band == "high" and ss.t0 is None and not ss.choice:
-    shown += ["notice_t", "notice_b", "notice_fee"]
+    # The balance claim is only allowed when AA data backs it; otherwise the mandate-only wording is used.
+    shown += (["notice_t", "notice_b", "notice_hist", "notice_stake", "notice_fee", "notice_src"] if ss.aa_consent
+              else ["notice_t", "notice_b_mandate", "notice_hist", "notice_stake", "notice_fee", "notice_src_mandate"])
     if ss.rogue:
         shown.append("rogue")
 on_screen = " ".join(TEMPLATES[k]["text"] for k in shown)
@@ -445,9 +513,10 @@ unapproved = [k for k in shown if not TEMPLATES[k]["ok"]]
 gap = abs(MODEL["by_bank"]["PSU"] - MODEL["by_bank"]["Private"])
 
 GATES = [
-    ("Gate 1 · Precision backtest (≥ 60%)", MODEL["precision"] >= PRECISION_FLOOR,
-     f"{MODEL['precision']:.1%} of T-3 notices were real failures on a time-split backtest "
-     f"(train months 1–9, test months 10–12; {MODEL['test_rows']:,} synthetic debits)."),
+    ("Gate 1 · Precision ≥ 60% and coverage ≥ 20%", model_ok,
+     f"{MODEL['precision']:.1%} of T-3 notices were real failures and they reached {MODEL['recall']:.1%} of all "
+     f"failures, on a time-split backtest (train months 1–9, test months 10–12; {MODEL['test_rows']:,} synthetic "
+     f"debits). Data: {'mandate history + Account Aggregator' if ss.aa_consent else 'mandate history only'}."),
     ("Gate 2 · Fairness across banks (gap ≤ 10 pts)", gap <= FAIRNESS_MAX_GAP,
      f"Precision PSU {MODEL['by_bank']['PSU']:.1%} vs private {MODEL['by_bank']['Private']:.1%} "
      f"(gap {gap * 100:.1f} pts). Bank type is not a model input; it is only used for this audit."),
@@ -577,13 +646,24 @@ with main:
 
         if ss.t0 is None:                                           # ---- before debit day ----
             if guard_on and not ss.choice:
+                body_key, src_key = (("notice_b", "notice_src") if ss.aa_consent
+                                     else ("notice_b_mandate", "notice_src_mandate"))
+                hist = "".join(f'<div class="{"y" if ok else "n"}"><i>{"✓" if ok else "✕"}</i>{m}</div>'
+                               for m, ok in hist_live)
                 st.markdown(
-                    f'<div class="guard"><div class="t">{esc(fmt(t("notice_t", date="{date}")))}</div>'
-                    f'<div class="b">{esc(fmt(t("notice_b", amt="{amt}", fund="{fund}", date="{date}", bank="{bank}")))}'
-                    f'</div><div class="fee">{esc(t("notice_fee"))}</div>'
+                    f'<div class="guard"><div class="t">{esc(tf("notice_t"))}</div>'
+                    f'<div class="b">{esc(tf(body_key))}</div>'
+                    f'<div class="sub" style="margin-top:10px;font-weight:600;color:{NAVY}">{esc(tf("notice_hist"))}'
+                    f'</div><div class="hist">{hist}</div>'
+                    f'<div class="stake"><div><div class="k">Instalments paid</div><div class="v">{g["paid"]} since '
+                    f'{esc(g["since"])}</div></div><div><div class="k">Invested</div><div class="v">'
+                    f'{inr(g["invested"])}</div></div><div><div class="k">Current value</div><div class="v up">'
+                    f'{inr(g["current"])}</div></div></div>'
+                    f'<div class="fee">{esc(tf("notice_stake"))}</div>'
+                    f'<div class="fee">{esc(tf("notice_fee"))}</div>'
                     + (f'<div class="b" style="color:#B91C1C">{esc(t("rogue"))}</div>' if "rogue" in shown else "")
-                    + '</div>', unsafe_allow_html=True)
-                if st.button("Resolve in 1 tap", type="primary", use_container_width=True, key="resolve"):
+                    + f'<div class="src">🔒 {esc(tf(src_key))}</div></div>', unsafe_allow_html=True)
+                if st.button("See my options · 1 tap", type="primary", use_container_width=True, key="resolve"):
                     action_sheet()
                 st.markdown(tracker([(f"Notified {dmy(TODAY)}", "done"), ("Your choice", ""),
                                      (f"Debit day {dmy(g['next'])}", ""), ("Units allotted", "")]),
@@ -599,13 +679,19 @@ with main:
                                      (f"Debit day {dmy(g['next'])}", ""), ("Units allotted", "")]),
                             unsafe_allow_html=True)
             elif ss.flag_on and band == "unsure":
-                st.markdown(f'<div class="info">🔔 {esc(fmt(t("reminder", amt="{amt}", bank="{bank}", date="{date}")))}'
+                rem = tf("reminder_hist" if x_live["fails_6m"] > 0 else "reminder")
+                st.markdown(f'<div class="info">🔔 {esc(rem)}'
                             '<div class="sub" style="margin-top:6px">Safe fallback: the model was not confident '
                             'enough for a SIP Guard notice.</div></div>', unsafe_allow_html=True)
             elif ss.flag_on and band == "high" and not gates_ok:
-                st.markdown(f'<div class="info">🔔 {esc(fmt(t("reminder", amt="{amt}", bank="{bank}", date="{date}")))}'
+                rem = tf("reminder_hist" if x_live["fails_6m"] > 0 else "reminder")
+                st.markdown(f'<div class="info">🔔 {esc(rem)}'
                             '<div class="sub" style="margin-top:6px">An eval gate failed, so SIP Guard fell back to '
                             'the standard reminder.</div></div>', unsafe_allow_html=True)
+            elif ss.flag_on and x_live["fails_6m"] > 0:              # Tier 1 rule: past bounces always earn a T-1 nudge
+                st.markdown(f'<div class="info">🔔 {esc(tf("reminder_hist"))}<div class="sub" style="margin-top:6px">'
+                            'Low model score, but this mandate has bounced before, so a T-1 reminder is queued.'
+                            '</div></div>', unsafe_allow_html=True)
             else:
                 st.markdown(f'<div class="info">Auto-debit scheduled for {dmy(g["next"])}. No action needed.</div>',
                             unsafe_allow_html=True)
@@ -680,7 +766,13 @@ with side:
             f'</div>'
             f'<div class="card"><h3>AutoPay mandates</h3><div class="sub" style="font-size:13px;line-height:1.8">'
             + "".join(f'{esc(s["bank"])} · {esc(s["name"].split(" Fund")[0])} · {ordinal(s["day"])}<br>' for s in SIPS)
-            + '</div></div>', unsafe_allow_html=True)
+            + '</div></div>'
+            + f'<div class="card"><h3>🔒 Data SIP Guard uses</h3><div class="sub" style="font-size:13px;line-height:1.7">'
+              f'<b style="color:{NAVY}">Debit history</b> · success / failure of each AutoPay debit, as your bank '
+              f'reports it to Groww.<br><b style="color:{NAVY}">Account Aggregator</b> · '
+            + (f'{esc(AA_LINK["bank"])} linked for “{esc(AA_LINK["purpose"])}”, consent till {AA_LINK["till"]}. '
+               f'Revoke any time.' if ss.aa_consent else 'Not linked. SIP Guard uses debit history only.')
+            + '<br>Never used: SMS, contacts, or data for loans or ads.</div></div>', unsafe_allow_html=True)
     else:
         with keyed("evaluator"):
             st.markdown('<div class="h3">🔍 Evaluator telemetry</div><div class="sub">Inspect the AI eval-gate '
@@ -688,7 +780,8 @@ with side:
                         unsafe_allow_html=True)
             st.toggle("Feature flag: Enable SIP Guard system", key="flag_on",
                       help="Kill switch. Off = standard Groww behaviour: no predictions, no notices.")
-            tab_m, tab_g, tab_d, tab_c = st.tabs(["Model", "Eval gates", "Golden Set", "Controls"])
+            tab_m, tab_t, tab_g, tab_p, tab_d, tab_c = st.tabs(
+                ["Model", "Data tiers", "Eval gates", "Pilot plan", "Golden Set", "Controls"])
 
             with tab_m:
                 verdict = {"high": ("p-red", "≥ 60% · T-3 SIP Guard notice"),
@@ -712,8 +805,42 @@ with side:
                     f'Gradient-boosted trees (scikit-learn, 150 trees, depth 3) trained on {MODEL["train_rows"]:,} '
                     f'synthetic debits; base failure rate {MODEL["base_rate"]:.0%}. Backtest at the 60% threshold: '
                     f'precision {MODEL["precision"]:.1%}, recall {MODEL["recall"]:.1%}, {MODEL["alerts"]:,} notices. '
-                    f'Inputs: the mandate\'s debit history plus balance and spending signals that would need '
-                    f'Account Aggregator consent in production. Never SMS.</div>', unsafe_allow_html=True)
+                    f'Inputs now: {"mandate debit history + Account Aggregator balance and spending" if ss.aa_consent else "mandate debit history only (AA consent off)"}. '
+                    f'Never SMS.</div>', unsafe_allow_html=True)
+
+            with tab_t:
+                st.markdown(
+                    "**How does Groww know the balance was low?** Only from data it is entitled to use:\n\n"
+                    "| Tier | Source | Consent | What the notice may say |\n| --- | --- | --- | --- |\n"
+                    "| 1 · Mandate history | NACH / UPI AutoPay return codes (e.g. *insufficient funds*) "
+                    "that Groww already receives | None extra: part of running the SIP | "
+                    "“2 of your last 6 debits didn't go through” |\n"
+                    "| 2 · Account Aggregator | Bank statement via an RBI-licensed AA | Explicit, purpose-bound "
+                    "(“warn you before SIP debits”), revocable | “…and your balance was below ₹2,500 around the 5th” |\n"
+                    "| Never | SMS, contacts, data collected for loans | — | — |")
+                a, m = MODELS["aa"], MODELS["mandate"]
+                st.markdown(
+                    "**Why Tier 2 is worth asking for** (same synthetic data, same 60% threshold):\n\n"
+                    "| Inputs | Notices | Precision | Failures caught |\n| --- | --- | --- | --- |\n"
+                    f"| Mandate history only | {m['alerts']:,} | {m['precision']:.0%} | {m['recall']:.1%} |\n"
+                    f"| + Account Aggregator | {a['alerts']:,} | {a['precision']:.0%} | {a['recall']:.1%} |")
+                st.caption("Bounce history alone barely clears the threshold for anyone, so without AA consent SIP "
+                           "Guard does not guess: investors with past bounces get an evidence-based T-1 reminder "
+                           "instead. Turn consent off under Controls to see it.")
+
+            with tab_p:
+                st.markdown(
+                    "**Who:** active SIPs ≥ 6 months old with at least one insufficient-funds bounce in the last 6 "
+                    "debits.  \n**When:** one notice at T-3 (push + this card); T-1 reminder as fallback.  \n"
+                    "**Design:** 50 / 50 holdout at investor level for 3 debit cycles.\n\n"
+                    "| Metric | Type | Success looks like |\n| --- | --- | --- |\n"
+                    "| Flagged SIPs still active after 3 months | Primary | +5 pts vs holdout |\n"
+                    "| Bounce rate on flagged debits | Secondary | −30% vs holdout |\n"
+                    "| Skip or UPI chosen instead of a bounce | Secondary | ≥ 40% of notices acted on |\n"
+                    "| SIP cancellations started from the notice | Guardrail | Not above holdout |\n"
+                    "| Notices where the debit would have succeeded | Guardrail | ≤ 40% (precision ≥ 60%) |\n"
+                    "| AA consent opt-in from the consent screen | Learning | Measure; decides Tier 2 rollout |")
+                st.caption("Targets are proposed hypotheses for the pilot, not results.")
 
             with tab_g:
                 gate_html = "".join(
@@ -741,6 +868,8 @@ with side:
             with tab_c:
                 st.radio("Ritu's situation this month (changes the model inputs)", list(SCENARIOS), key="scenario",
                          format_func=lambda k: SCENARIOS[k]["label"], on_change=reset)
+                st.toggle("Account Aggregator consent (Tier 2 balance data)", key="aa_consent", on_change=reset,
+                          help="Off = SIP Guard uses mandate debit history only and may not mention balance.")
                 st.toggle("Inject an unapproved marketing message (tests Gates 3, 5 and 6)", key="rogue")
                 st.number_input("Consecutive skips/misses before this month", 0, 2, key="prior_skips")
                 if st.button("↺ Reset demo", use_container_width=True):
