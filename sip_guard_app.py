@@ -225,6 +225,8 @@ def ordinal(n: int) -> str:
 USER, USER_INITIALS = "Daksh", "RM"
 TODAY = date(2026, 11, 2)            # demo clock: 3 days before the 5 Nov debit (T-3), so every option is still free
 SIP_DAYS = list(range(1, 32))       # 1st–31st (29th–31st get a short-month note in the action sheet)
+DEBIT_TEST_NOTE = ("Test execution outcome: verifies whether AutoPay passes, bounces with a ₹295–₹885 bank "
+                   "charge, or acknowledges prior UPI/skip protection.")
 UPI_ID = "groww.amc@hdfcbank"       # demo display only
 SKIP_CUTOFF_DAYS = 2                 # Groww: a skip within 2 days of the instalment applies only from the next one
 SIPS = [
@@ -616,12 +618,14 @@ main, side = st.columns([1.65, 1], gap="large")
 # =================================================================================================================
 # RENDER · MODULE 2 + 3: RUNNING SIPS, SIP GUARD NOTICE, 1-TAP ACTION SHEET, TIMELINE
 # =================================================================================================================
-CHOICE_STEP = {"upi": "Paid via UPI", "skip": "Skipped for Nov", "shift": "Date moved to {day}", "keep": "Debit kept"}
+CHOICE_STEP = {"upi": "🟢 Paid via UPI", "skip": "🟢 Month Skipped", "shift": "🟢 Date Rescheduled",
+               "keep": "🟢 AutoPay Confirmed"}
 
 
 def choice_step() -> tuple[str, str]:
-    """Second tracker step: 'Your choice' (open circle) until an option is confirmed, then the action (green ✓)."""
-    return (fmt(CHOICE_STEP[ss.choice]), "done") if ss.choice else ("Your choice", "")
+    """Second tracker step: 'Protective Action' (open circle) until an option is confirmed, then the confirmed
+    action (green ✓). Driven by ss.choice, so it survives every rerun."""
+    return (CHOICE_STEP[ss.choice], "done") if ss.choice else ("Protective Action", "")
 
 
 def tracker(stages: list[tuple[str, str]]) -> str:
@@ -909,8 +913,10 @@ with main:
             else:
                 st.markdown(f'<div class="info">Auto-debit scheduled for {dmy(g["next"])}. No action needed.</div>',
                             unsafe_allow_html=True)
-            st.button(f"⏩ Simulate debit day ({dmy(g['next'])})", use_container_width=True,
+            st.button(f"⏩ Execute Scheduled Debit ({dmy(g['next'])})", use_container_width=True,
+                      help=DEBIT_TEST_NOTE,
                       on_click=simulate_debit_day, key="sim_t0")
+            st.caption(DEBIT_TEST_NOTE)
         else:                                                       # ---- debit day ----
             if ss.t0 == "not_presented":
                 st.markdown(f'<div class="ok">✓ Nothing was presented to {esc(g["bank"])} on {dmy(g["next"])}, so '
