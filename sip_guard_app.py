@@ -11,7 +11,7 @@ What is real and what is simulated
   (18,000 monthly debits, 1,500 simulated investors, 12 months). No real Groww or bank data is used.
 - Every eval gate is computed live: precision and fairness from a time-split backtest (train on months 1–9,
   test on months 10–12), compliance and tone gates by scanning the approved copy library with regex.
-- The investor (Ritu), the portfolio and the bank accounts are fictional. Fund names are used only as labels;
+- The investor, the portfolio and the bank accounts are fictional. Fund names are used only as labels;
   no NAVs, returns or ratings of real funds are shown.
 - Evidence figures (680 records, 83-case golden set, 35% / 62% / 11%, ₹295–₹885 bounce charges) come from the
   Groww SIP Discovery Engine and public bank fee schedules.
@@ -198,8 +198,10 @@ def ordinal(n: int) -> str:
 
 
 # ---- Fictional account ------------------------------------------------------------------------------------------
-USER, USER_FULL = "Ritu", "Ritu M"
+USER, USER_INITIALS = "Daksh", "RM"
 TODAY = date(2026, 11, 2)            # demo clock: 3 days before the 5 Nov debit (T-3), so every option is still free
+SIP_DAYS = list(range(1, 29))       # 1st–28th: every month has these days (no Feb / 30-day-month gaps)
+UPI_ID = "groww.amc@hdfcbank"       # demo display only
 SKIP_CUTOFF_DAYS = 2                 # Groww: a skip within 2 days of the instalment applies only from the next one
 SIPS = [
     {"id": "ppfas", "short": "PP", "name": "Parag Parikh Flexi Cap Fund", "plan": "Direct Growth",
@@ -286,7 +288,7 @@ def train_and_backtest(features: tuple[str, ...] = tuple(FEATURES)) -> dict:
 
 MODELS = {"aa": train_and_backtest(tuple(FEATURES)), "mandate": train_and_backtest(tuple(MANDATE_FEATURES))}
 
-# Ritu's live feature vectors for the 5 Nov debit (evaluators can switch scenario to test the gates).
+# The investor's live feature vectors for the 5 Nov debit (evaluators can switch scenario to test the gates).
 # "hist" = the last 6 debits on this mandate (first-party NACH / AutoPay return data); it matches fails_6m.
 SCENARIOS = {
     "high": {"label": "Cash crunch this month",
@@ -367,6 +369,9 @@ TEMPLATES = {
                                      "{after}."},
     "o_shift": {"ok": True, "text": "📅 Move future SIP dates"},
     "o_shift_d": {"ok": True, "text": "Pick a day that suits your cash flow. Applies from December."},
+    "o_shift_tip": {"ok": True, "text": "💡 Suggestion: Setting your SIP debit date 2–3 days right after your "
+                                        "regular salary credit day ensures maximum account liquidity and "
+                                        "uninterrupted compounding."},
     "o_keep": {"ok": True, "text": "✅ Keep the debit as it is"},
     "o_keep_d": {"ok": True, "text": "Nothing changes. We'll send one reminder the day before."},
     "skip_rule": {"ok": True, "text": "Note: skips count toward the AMCs' rule that 3 missed or skipped instalments "
@@ -377,8 +382,8 @@ TEMPLATES = {
                                    "returns."},
 }
 CONFIRM = {
-    "upi": "<b>Paid {amt} via UPI.</b> AutoPay for {date} is paused for this instalment, so there's no duplicate "
-           "debit and no bank charge. Units at the NAV of the payment date.",
+    "upi": "✅ <b>Payment of {amt} received via UPI.</b> Mandate debit for {date} frozen. Your bank will not be "
+           "presented with a debit, avoiding bounce charges.",
     "skip": "<b>Skipped for November.</b> SIP remains active. Not sent to your bank, so no bank charge. "
             "Resumes automatically on {after}.",
     "shift": "<b>Date moved.</b> From December this SIP debits on the {day}. The {date} debit is still scheduled; "
@@ -386,7 +391,7 @@ CONFIRM = {
     "keep": "<b>Debit kept.</b> We'll send one reminder on {t1} to keep {amt} in {bank}.",
 }
 STATUS = {
-    "upi": "🟢 Paid via UPI · AutoPay paused (₹0 bank charge)",
+    "upi": "🟢 Paid via UPI · AutoPay Frozen (₹0 Bank Fine)",
     "skip": "🟢 Skipped · SIP active (₹0 bank charge)",
     "shift": "🟢 From Dec: debits on the {day}",
     "keep": "🔔 Kept · reminder on {t1}",
@@ -425,6 +430,7 @@ def library_texts() -> list[str]:
 ss = st.session_state
 ss.setdefault("choice", None)          # None | upi | skip | shift | keep
 ss.setdefault("shift_day", 8)
+ss.setdefault("upi_step", False)       # UPI QR screen open inside the action sheet
 ss.setdefault("t0", None)              # None | not_presented | success | failed
 ss.setdefault("paid_after", False)
 ss.setdefault("balance_added", False)
@@ -459,7 +465,7 @@ def log(event: str) -> None:
 
 
 def reset() -> None:
-    ss.choice, ss.t0, ss.paid_after, ss.balance_added = None, None, False, False
+    ss.choice, ss.t0, ss.paid_after, ss.balance_added, ss.upi_step = None, None, False, False, False
     ss.log = []
 
 
@@ -549,7 +555,7 @@ st.markdown(
     f'<div class="nav"><span class="logo"><i></i>Groww</span>'
     f'<span class="search">{SEARCH}Search mutual funds, SIPs…</span>'
     f'<div class="r"><span class="ico">{BELL}<span class="dot"></span></span>'
-    f'<span class="avatar"><b>RM</b><span>{USER_FULL}</span></span></div></div>'
+    f'<span class="avatar" title="Profile"><b>{USER_INITIALS}</b></span></div></div>'
     f'<div class="subnav"><span class="on">Mutual Funds</span><span>SIP Dashboard</span><span>Orders</span></div>',
     unsafe_allow_html=True)
 
@@ -578,6 +584,14 @@ main, side = st.columns([1.65, 1], gap="large")
 # =================================================================================================================
 # RENDER · MODULE 2 + 3: RUNNING SIPS, SIP GUARD NOTICE, 1-TAP ACTION SHEET, TIMELINE
 # =================================================================================================================
+CHOICE_STEP = {"upi": "Paid via UPI", "skip": "Skipped for Nov", "shift": "Date moved to {day}", "keep": "Debit kept"}
+
+
+def choice_step() -> tuple[str, str]:
+    """Second tracker step: 'Your choice' (open circle) until an option is confirmed, then the action (green ✓)."""
+    return (fmt(CHOICE_STEP[ss.choice]), "done") if ss.choice else ("Your choice", "")
+
+
 def tracker(stages: list[tuple[str, str]]) -> str:
     out = []
     for i, (label, s) in enumerate(stages):
@@ -588,16 +602,67 @@ def tracker(stages: list[tuple[str, str]]) -> str:
     return '<div class="track">' + "".join(out) + "</div>"
 
 
+def demo_qr_svg(size: int = 196) -> str:
+    """Decorative QR-style pattern with the Groww mark in the centre. It encodes NOTHING, so it can't be scanned
+    into a real payment by accident."""
+    n, cell = 29, size / 29
+    rng = np.random.default_rng(7)
+    on = rng.random((n, n)) < 0.48
+    rects = []
+
+    def finder(r0: int, c0: int) -> None:
+        for r in range(7):
+            for c in range(7):
+                on[r0 + r, c0 + c] = r in (0, 6) or c in (0, 6) or (2 <= r <= 4 and 2 <= c <= 4)
+        for k in range(-1, 8):                       # quiet ring around each finder
+            for rr, cc in ((r0 - 1, c0 + k), (r0 + 7, c0 + k), (r0 + k, c0 - 1), (r0 + k, c0 + 7)):
+                if 0 <= rr < n and 0 <= cc < n:
+                    on[rr, cc] = False
+
+    for r0, c0 in ((0, 0), (0, n - 7), (n - 7, 0)):
+        finder(r0, c0)
+    on[11:18, 11:18] = False                         # space for the logo
+    for r in range(n):
+        for c in range(n):
+            if on[r, c]:
+                rects.append(f'<rect x="{c * cell:.2f}" y="{r * cell:.2f}" width="{cell:.2f}" height="{cell:.2f}"/>')
+    m = size / 2
+    return (f'<svg width="{size}" height="{size}" viewBox="0 0 {size} {size}" role="img" aria-label="Demo QR code">'
+            f'<rect width="{size}" height="{size}" fill="#fff"/><g fill="{NAVY}">{"".join(rects)}</g>'
+            f'<rect x="{m - 22}" y="{m - 22}" width="44" height="44" rx="10" fill="#fff"/>'
+            f'<circle cx="{m}" cy="{m}" r="16" fill="{MINT}"/>'
+            f'<path d="M{m - 16} {m} a16 16 0 0 0 32 0 z" fill="#5367FF"/></svg>')
+
+
 @st.dialog("Handle your 5 Nov debit")
 def action_sheet() -> None:
     g = GUARDED
+    if ss.get("upi_step"):                                       # ---- in-dialog UPI payment screen ----
+        st.markdown(f'<div style="font-size:18px;font-weight:700;color:{NAVY}">Pay {inr(g["amt"])} via Instant UPI'
+                    '</div><div class="sub">Scan QR code or approve request on your UPI app '
+                    '(GPay / PhonePe / Paytm / BHIM)</div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="display:flex;justify-content:center;margin:14px 0 6px 0"><div style="padding:12px;'
+                    f'border:1px solid {BORDER};border-radius:14px;background:#fff">{demo_qr_svg()}</div></div>'
+                    f'<div class="sub" style="text-align:center">Demo QR · not a real payment request</div>',
+                    unsafe_allow_html=True)
+        st.caption("UPI ID")
+        st.code(UPI_ID, language=None)                           # st.code has a built-in copy button
+        if st.button("Simulate Successful Payment", type="primary", use_container_width=True, key="d_upi_ok"):
+            ss.upi_step = False
+            choose("upi")
+            st.rerun()
+        if st.button("← Back to options", use_container_width=True, key="d_upi_back"):
+            ss.upi_step = False
+            st.rerun(scope="fragment")
+        return
+
     st.markdown(f'<div class="sub">{esc(g["name"])} · {inr(g["amt"])} · {dmy(g["next"])} · {esc(g["bank"])}. '
                 f'All four options are free because it is more than {SKIP_CUTOFF_DAYS} days before the debit.</div>',
                 unsafe_allow_html=True)
     st.write("")
     if st.button(tf("o_upi"), type="primary", use_container_width=True, key="d_upi"):
-        choose("upi")
-        st.rerun()
+        ss.upi_step = True
+        st.rerun(scope="fragment")                               # stay inside the dialog, show the UPI screen
     st.caption(fmt(t("o_upi_d", amt="{amt}", date="{date}", bank="{bank}")))
     if st.button(t("o_skip"), use_container_width=True, key="d_skip"):
         choose("skip")
@@ -605,12 +670,13 @@ def action_sheet() -> None:
     st.caption(fmt(t("o_skip_d", after="{after}")) + " " + t("skip_rule", used=ss.prior_skips + 1))
     st.markdown(f'<div style="font-weight:600;font-size:14px;margin-top:6px">{esc(t("o_shift"))}</div>',
                 unsafe_allow_html=True)
-    ss.shift_day = st.select_slider("New SIP day", options=list(range(6, 29)), value=ss.shift_day,
+    ss.shift_day = st.select_slider("New SIP day", options=SIP_DAYS, value=ss.shift_day,
                                     format_func=ordinal, label_visibility="collapsed")
-    if st.button(f"Move to the {ordinal(ss.shift_day)} from December", use_container_width=True, key="d_shift"):
+    if st.button(f"Move debit to the {ordinal(ss.shift_day)} from next month", use_container_width=True,
+                 key="d_shift"):
         choose("shift")
         st.rerun()
-    st.caption(t("o_shift_d"))
+    st.caption(t("o_shift_d") + "  \n" + t("o_shift_tip"))
     if st.button(t("o_keep"), use_container_width=True, key="d_keep"):
         choose("keep")
         st.rerun()
@@ -664,9 +730,9 @@ with main:
                     f'<div class="fee">{esc(tf("notice_fee"))}</div>'
                     + (f'<div class="b" style="color:#B91C1C">{esc(t("rogue"))}</div>' if "rogue" in shown else "")
                     + f'<div class="src">🔒 {esc(tf(src_key))}</div></div>', unsafe_allow_html=True)
-                if st.button("See my options · 1 tap", type="primary", use_container_width=True, key="resolve"):
+                if st.button("Resolve debit risk · View options", type="primary", use_container_width=True, key="resolve"):
                     action_sheet()
-                st.markdown(tracker([(f"Notified {dmy(TODAY)}", "done"), ("Your choice", ""),
+                st.markdown(tracker([(f"Notified {dmy(TODAY)}", "done"), choice_step(),
                                      (f"Debit day {dmy(g['next'])}", ""), ("Units allotted", "")]),
                             unsafe_allow_html=True)
             elif ss.choice and ss.flag_on:
@@ -676,7 +742,7 @@ with main:
                 if ss.choice in ("shift", "keep"):
                     ss.balance_added = st.checkbox(f"I've added {inr(g['amt'])} to {g['bank']}",
                                                    value=ss.balance_added, key="bal_chk")
-                st.markdown(tracker([(f"Notified {dmy(TODAY)}", "done"), ("Your choice", "done"),
+                st.markdown(tracker([(f"Notified {dmy(TODAY)}", "done"), choice_step(),
                                      (f"Debit day {dmy(g['next'])}", ""), ("Units allotted", "")]),
                             unsafe_allow_html=True)
             elif ss.flag_on and band == "unsure":
@@ -705,7 +771,7 @@ with main:
                             + (f'{inr(g["amt"])} was invested via UPI.' if ss.choice == "upi"
                                else f'Instalment skipped; next debit {dmy(g["after"])}.') + '</div>',
                             unsafe_allow_html=True)
-                st.markdown(tracker([("Notified", "done"), ("Your choice", "done"), ("Not presented", "done"),
+                st.markdown(tracker([("Notified", "done"), choice_step(), ("Not presented", "done"),
                                      ("₹0 charge", "done")]), unsafe_allow_html=True)
             elif ss.t0 == "success" or ss.paid_after:
                 st.markdown(f'<div class="ok">✓ {inr(g["amt"])} '
@@ -867,7 +933,7 @@ with side:
                            "file itself is not bundled in this app.")
 
             with tab_c:
-                st.radio("Ritu's situation this month (changes the model inputs)", list(SCENARIOS), key="scenario",
+                st.radio(f"{USER}'s situation this month (changes the model inputs)", list(SCENARIOS), key="scenario",
                          format_func=lambda k: SCENARIOS[k]["label"], on_change=reset)
                 st.toggle("Account Aggregator consent (Tier 2 balance data)", key="aa_consent", on_change=reset,
                           help="Off = SIP Guard uses mandate debit history only and may not mention balance.")
