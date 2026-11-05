@@ -178,6 +178,21 @@ html, body, .stApp, .stApp *:not([data-testid="stIconMaterial"]):not(.material-s
 .stButton button[kind="secondary"] {{ background: {WHITE}; border: 1px solid #E2E8F0; color: {BODY}; }}
 .stButton button[kind="secondary"]:hover {{ border-color: {MINT}; color: {MINT_TXT}; background: #F6FFFC; }}
 
+/* action-sheet options: one purpose colour each (scoped by widget key: .st-key-<key>) */
+.st-key-d_skip button, .st-key-d_shift button, .st-key-d_keep button {{ padding: 10px 18px; font-weight: 600;
+  border-radius: 10px; transition: all 0.2s ease; }}
+.st-key-d_skip button p, .st-key-d_shift button p, .st-key-d_keep button p {{ font-weight: 600; }}
+.st-key-d_skip button {{ background: #FEF3C7; border: 1.5px solid #F59E0B; color: #92400E; }}
+.st-key-d_skip button:hover, .st-key-d_skip button:focus-visible {{ background: #FDE68A; border-color: #D97706;
+  color: #92400E; }}
+.st-key-d_shift button {{ background: #EFF6FF; border: 1.5px solid #3B82F6; color: #1E40AF; }}
+.st-key-d_shift button:hover, .st-key-d_shift button:focus-visible {{ background: #DBEAFE; border-color: #2563EB;
+  color: #1E40AF; }}
+.st-key-d_keep button {{ background: #F1F5F9; border: 1.5px solid #94A3B8; color: #334155; }}
+.st-key-d_keep button:hover, .st-key-d_keep button:focus-visible {{ background: #E2E8F0; border-color: #64748B;
+  color: #334155; }}
+.st-key-d_skip button:active, .st-key-d_shift button:active, .st-key-d_keep button:active {{ transform: scale(.99); }}
+
 /* evaluator telemetry */
 .tele {{ display: grid; grid-template-columns: minmax(0, 1fr) 70px; gap: 6px; padding: 8px 0;
   border-bottom: 1px solid #F1F5F9; font-size: 13px; color: {NAVY}; align-items: center; }}
