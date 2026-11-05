@@ -178,20 +178,28 @@ html, body, .stApp, .stApp *:not([data-testid="stIconMaterial"]):not(.material-s
 .stButton button[kind="secondary"] {{ background: {WHITE}; border: 1px solid #E2E8F0; color: {BODY}; }}
 .stButton button[kind="secondary"]:hover {{ border-color: {MINT}; color: {MINT_TXT}; background: #F6FFFC; }}
 
-/* action-sheet options: one purpose colour each (scoped by widget key: .st-key-<key>) */
-.st-key-d_skip button, .st-key-d_shift button, .st-key-d_keep button {{ padding: 10px 18px; font-weight: 600;
-  border-radius: 10px; transition: all 0.2s ease; }}
-.st-key-d_skip button p, .st-key-d_shift button p, .st-key-d_keep button p {{ font-weight: 600; }}
-.st-key-d_skip button {{ background: #FEF3C7; border: 1.5px solid #F59E0B; color: #92400E; }}
-.st-key-d_skip button:hover, .st-key-d_skip button:focus-visible {{ background: #FDE68A; border-color: #D97706;
-  color: #92400E; }}
-.st-key-d_shift button {{ background: #EFF6FF; border: 1.5px solid #3B82F6; color: #1E40AF; }}
-.st-key-d_shift button:hover, .st-key-d_shift button:focus-visible {{ background: #DBEAFE; border-color: #2563EB;
-  color: #1E40AF; }}
-.st-key-d_keep button {{ background: #F1F5F9; border: 1.5px solid #94A3B8; color: #334155; }}
-.st-key-d_keep button:hover, .st-key-d_keep button:focus-visible {{ background: #E2E8F0; border-color: #64748B;
-  color: #334155; }}
-.st-key-d_skip button:active, .st-key-d_shift button:active, .st-key-d_keep button:active {{ transform: scale(.99); }}
+/* action-sheet options: one purpose colour each. Each button sits in a keyed container (.st-key-opt_*);
+   selectors include [kind] + !important so they beat the generic .stButton button[kind="secondary"] rule. */
+.st-key-opt_skip .stButton button, .st-key-opt_shift .stButton button, .st-key-opt_keep .stButton button,
+.st-key-opt_skip .stButton button[kind], .st-key-opt_shift .stButton button[kind], .st-key-opt_keep .stButton button[kind] {{
+  padding: 10px 18px !important; font-weight: 600 !important; border-radius: 10px !important;
+  transition: all 0.2s ease !important; }}
+.st-key-opt_skip .stButton button p, .st-key-opt_shift .stButton button p, .st-key-opt_keep .stButton button p {{
+  font-weight: 600 !important; color: inherit !important; }}
+.st-key-opt_skip .stButton button[kind] {{ background: #FEF3C7 !important; border: 1.5px solid #F59E0B !important;
+  color: #92400E !important; }}
+.st-key-opt_skip .stButton button[kind]:hover, .st-key-opt_skip .stButton button[kind]:focus-visible {{
+  background: #FDE68A !important; border-color: #D97706 !important; color: #92400E !important; }}
+.st-key-opt_shift .stButton button[kind] {{ background: #EFF6FF !important; border: 1.5px solid #3B82F6 !important;
+  color: #1E40AF !important; }}
+.st-key-opt_shift .stButton button[kind]:hover, .st-key-opt_shift .stButton button[kind]:focus-visible {{
+  background: #DBEAFE !important; border-color: #2563EB !important; color: #1E40AF !important; }}
+.st-key-opt_keep .stButton button[kind] {{ background: #F1F5F9 !important; border: 1.5px solid #94A3B8 !important;
+  color: #334155 !important; }}
+.st-key-opt_keep .stButton button[kind]:hover, .st-key-opt_keep .stButton button[kind]:focus-visible {{
+  background: #E2E8F0 !important; border-color: #64748B !important; color: #334155 !important; }}
+.st-key-opt_skip .stButton button:active, .st-key-opt_shift .stButton button:active,
+.st-key-opt_keep .stButton button:active {{ transform: scale(.99); }}
 
 /* evaluator telemetry */
 .tele {{ display: grid; grid-template-columns: minmax(0, 1fr) 70px; gap: 6px; padding: 8px 0;
@@ -734,23 +742,26 @@ def action_sheet() -> None:
         ss.upi_step = True
         st.rerun(scope="fragment")                               # stay inside the dialog, show the UPI screen
     st.caption(fmt(t("o_upi_d", amt="{amt}", date="{date}", bank="{bank}")))
-    if st.button(t("o_skip"), use_container_width=True, key="d_skip"):
-        choose("skip")
-        st.rerun()
+    with keyed("opt_skip"):
+        if st.button(t("o_skip"), use_container_width=True, key="d_skip"):
+            choose("skip")
+            st.rerun()
     st.caption(fmt(t("o_skip_d", after="{after}")) + " " + t("skip_rule", used=ss.prior_skips + 1))
     st.markdown(f'<div style="font-weight:600;font-size:14px;margin-top:6px">{esc(t("o_shift"))}</div>',
                 unsafe_allow_html=True)
     ss.shift_day = st.select_slider("New SIP day", options=SIP_DAYS, value=ss.shift_day,
                                     format_func=ordinal, label_visibility="collapsed")
-    if st.button(f"Move debit to the {ordinal(ss.shift_day)} from next month", use_container_width=True,
-                 key="d_shift"):
-        choose("shift")
-        st.rerun()
+    with keyed("opt_shift"):
+        if st.button(f"Move debit to the {ordinal(ss.shift_day)} from next month", use_container_width=True,
+                     key="d_shift"):
+            choose("shift")
+            st.rerun()
     st.caption(t("o_shift_d") + "  \n" + t("o_shift_tip")
                + ("  \n" + tf("o_shift_short") if ss.shift_day > 28 else ""))
-    if st.button(t("o_keep"), use_container_width=True, key="d_keep"):
-        choose("keep")
-        st.rerun()
+    with keyed("opt_keep"):
+        if st.button(t("o_keep"), use_container_width=True, key="d_keep"):
+            choose("keep")
+            st.rerun()
     st.caption(t("o_keep_d"))
 
 
