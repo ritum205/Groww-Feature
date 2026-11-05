@@ -203,11 +203,11 @@ TODAY = date(2026, 11, 2)            # demo clock: 3 days before the 5 Nov debit
 SKIP_CUTOFF_DAYS = 2                 # Groww: a skip within 2 days of the instalment applies only from the next one
 SIPS = [
     {"id": "ppfas", "short": "PP", "name": "Parag Parikh Flexi Cap Fund", "plan": "Direct Growth",
-     "cat": "Equity · Flexi Cap", "amt": 2500, "day": 5, "bank": "HDFC Bank ••4821", "invested": 30000,
-     "current": 34180, "paid": 12, "since": "Sep 2025"},
+     "cat": "Equity · Flexi Cap", "amt": 5000, "day": 5, "bank": "HDFC Bank ••4821", "invested": 60000,
+     "current": 68360, "paid": 12, "since": "Sep 2025"},
     {"id": "nippon", "short": "NI", "name": "Nippon India Small Cap Fund", "plan": "Direct Growth",
-     "cat": "Equity · Small Cap", "amt": 1500, "day": 12, "bank": "ICICI Bank ••7730", "invested": 18000,
-     "current": 20050, "paid": 12, "since": "Nov 2025"},
+     "cat": "Equity · Small Cap", "amt": 5000, "day": 12, "bank": "ICICI Bank ••7730", "invested": 60000,
+     "current": 66833, "paid": 12, "since": "Nov 2025"},
 ]
 AA_LINK = {"bank": "HDFC Bank ••4821", "via": "Account Aggregator", "purpose": "Warn you before SIP debits that "
            "may fail", "till": "31 Mar 2027"}  # fictional consent artefact shown to the investor
@@ -335,12 +335,13 @@ TEMPLATES = {
     # Every factual claim in the notice maps to a data source the investor can see on the card:
     #   "{fails} of your last 6 debits"  -> mandate return history (Tier 1, shown as the 6-month strip)
     #   "balance was below {amt} ..."    -> Account Aggregator data (Tier 2, consent named in the source line)
-    "notice_t": {"ok": True, "text": "🛡️ SIP Guard: a heads-up on your {date} debit"},
-    "notice_b": {"ok": True, "text": "Your {amt} debit for {fund} on {date} ({bank}) may not go through. {fails} of "
-                                     "your last 6 debits on this mandate didn't go through, and in {lowbal} of the "
-                                     "last 6 months your balance was below {amt} around the {day_of}. Pick an option "
-                                     "below while all of them are free. Nothing changes unless you choose."},
-    "notice_b_mandate": {"ok": True, "text": "Your {amt} debit for {fund} on {date} ({bank}) may not go through. "
+    "notice_t": {"ok": True, "text": "⚡ SIP Guard: your {date} auto-debit may bounce"},
+    "notice_b": {"ok": True, "text": "Your upcoming {amt} debit on {date} ({bank}) may not go through: {fails} of your "
+                                     "last 6 debits on this mandate didn't go through, and in {lowbal} of the last 6 "
+                                     "months your balance ran below {amt} around the {day_of}. Skip a ₹295–₹885 bank "
+                                     "bounce charge and keep your SIP compounding: pick an option below while all of "
+                                     "them are free. Nothing changes unless you choose."},
+    "notice_b_mandate": {"ok": True, "text": "Your upcoming {amt} debit on {date} ({bank}) may not go through. "
                                              "{fails} of your last 6 debits on this mandate didn't go through due "
                                              "to low balance. Pick an option below while all of them are free. "
                                              "Nothing changes unless you choose."},
@@ -358,7 +359,7 @@ TEMPLATES = {
                                      "balance."},
     "reminder_hist": {"ok": True, "text": "{fails} of your last 6 debits for this SIP didn't go through. Reminder: "
                                           "{amt} will be debited from {bank} on {date}."},
-    "o_upi": {"ok": True, "text": "⚡ Skip this month's AutoPay & pay via UPI"},
+    "o_upi": {"ok": True, "text": "⚡ Skip this month's AutoPay & pay {amt} via UPI"},
     "o_upi_d": {"ok": True, "text": "Pay {amt} from any UPI app or another bank. The {date} AutoPay debit is not sent "
                                     "to {bank}, so it can't bounce."},
     "o_skip": {"ok": True, "text": "⏸️ Skip this month"},
@@ -594,7 +595,7 @@ def action_sheet() -> None:
                 f'All four options are free because it is more than {SKIP_CUTOFF_DAYS} days before the debit.</div>',
                 unsafe_allow_html=True)
     st.write("")
-    if st.button(t("o_upi"), type="primary", use_container_width=True, key="d_upi"):
+    if st.button(tf("o_upi"), type="primary", use_container_width=True, key="d_upi"):
         choose("upi")
         st.rerun()
     st.caption(fmt(t("o_upi_d", amt="{amt}", date="{date}", bank="{bank}")))
@@ -722,7 +723,7 @@ with main:
                             unsafe_allow_html=True)
             else:
                 st.markdown(f'<div class="fail">{esc(fmt(t("recovery", date="{date}")))}</div>', unsafe_allow_html=True)
-                st.button(f"Pay {inr(g['amt'])} via UPI to invest this month", type="primary",
+                st.button(f"Pay {inr(g['amt'])} via UPI to keep this month's instalment", type="primary",
                           use_container_width=True, on_click=pay_after_failure, key="pay_after")
                 st.markdown(tracker([("Scheduled", "done"), ("Debit bounced", "bad"), ("Recover via UPI", "")]),
                             unsafe_allow_html=True)
@@ -816,7 +817,7 @@ with side:
                     "that Groww already receives | None extra: part of running the SIP | "
                     "“2 of your last 6 debits didn't go through” |\n"
                     "| 2 · Account Aggregator | Bank statement via an RBI-licensed AA | Explicit, purpose-bound "
-                    "(“warn you before SIP debits”), revocable | “…and your balance was below ₹2,500 around the 5th” |\n"
+                    "(“warn you before SIP debits”), revocable | “…and your balance was below ₹5,000 around the 5th” |\n"
                     "| Never | SMS, contacts, data collected for loans | — | — |")
                 a, m = MODELS["aa"], MODELS["mandate"]
                 st.markdown(
