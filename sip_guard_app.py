@@ -11,14 +11,16 @@ What is real and what is simulated
   (18,000 monthly debits, 1,500 simulated investors, 12 months). No real Groww or bank data is used.
 - Every eval gate is computed live: precision and fairness from a time-split backtest (train on months 1–9,
   test on months 10–12), compliance and tone gates by scanning the approved copy library with regex.
-- The investor, the portfolio and the bank accounts are fictional. Fund names are used only as labels;
-  no NAVs, returns or ratings of real funds are shown.
+- The investor, the portfolio and the bank accounts are fictional.
+- The fund performance chart is real: daily NAVs for the two Direct-Growth schemes are fetched live from the
+  public AMFI feed (api.mfapi.in, AMFI codes 122639 and 118778) and every return shown is computed from them.
+  If the feed can't be reached, the chart says so instead of showing made-up numbers.
 - Evidence figures (680 records, 83-case golden set, 35% / 62% / 11%, ₹295–₹885 bounce charges) come from the
   Groww SIP Discovery Engine and public bank fee schedules.
 
 How SIP Guard knows a debit may fail (the "data tiers")
-- Tier 1 · Mandate history (first-party, no extra consent): NACH / UPI AutoPay return codes on this mandate, e.g.
-  "insufficient funds". Groww already receives these for every SIP.
+- Tier 1 · Debit history: NACH / UPI AutoPay return codes on this mandate (e.g. "insufficient funds"), plus the
+  bank's debit SMS alerts read with the investor's SMS permission.
 - Tier 2 · Account Aggregator (RBI AA framework, explicit purpose-bound consent): balance and spending around the
   debit date. Only with this tier may the notice say anything about the investor's balance.
 - Evaluators can switch AA consent off: the app retrains on mandate history only, shows the honest backtest, and
@@ -29,11 +31,14 @@ Concept prototype for a NextLeap capstone. Not affiliated with or endorsed by Gr
 from __future__ import annotations
 
 import html
+import json
 import re
+import urllib.request
 from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.metrics import precision_score, recall_score
@@ -124,6 +129,25 @@ html, body, .stApp, .stApp *:not([data-testid="stIconMaterial"]):not(.material-s
 .fail {{ border: 1px solid #FECACA; background: #FEE2E2; border-radius: 14px; padding: 12px 16px; font-size: 13.5px;
   color: #7F1D1D; line-height: 1.55; margin-top: 12px; }}
 
+/* compact SIP Guard strip on the fund card */
+.st-key-guard_strip {{ border: 1px solid #FDE68A; background: rgba(254, 243, 199, 0.45); border-radius: 10px;
+  padding: 12px 16px; margin-top: 12px; }}
+.st-key-guard_strip .gt {{ font-size: 14.5px; font-weight: 700; color: {NAVY}; }}
+.st-key-guard_strip .gs {{ font-size: 12.5px; color: {BODY}; margin-top: 2px; line-height: 1.45; }}
+
+/* fund performance card + Groww-style pill selectors */
+.st-key-fund_chart {{ background: {WHITE}; border: 1px solid {BORDER}; border-radius: 16px; padding: 16px 18px;
+  margin-bottom: 14px; box-shadow: 0 1px 3px rgba(0,0,0,.04); }}
+.perf .ret {{ font-size: 24px; font-weight: 700; letter-spacing: -0.01em; }}
+.perf .lbl {{ font-size: 13px; color: {META}; margin-left: 6px; }}
+.perf .d1 {{ font-size: 13px; font-weight: 600; margin-left: 12px; }}
+.perf .pos {{ color: {MINT_TXT}; }} .perf .neg {{ color: #DC2626; }}
+[data-testid="stButtonGroup"] button {{ border-radius: 9999px !important; border: 1px solid #E2E8F0 !important;
+  background: {WHITE} !important; color: {BODY} !important; font-weight: 600; font-size: 13px; min-height: 32px;
+  padding: 2px 14px; margin-right: 6px; }}
+[data-testid="stButtonGroup"] button[data-testid$="Active"], [data-testid="stButtonGroup"] button[aria-checked="true"] {{
+  background: {NAVY} !important; color: {WHITE} !important; border-color: {NAVY} !important; }}
+
 /* debit-history strip + "your SIP so far" (evidence the investor can verify) */
 .hist {{ display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; margin: 12px 0 4px 0; }}
 .hist div {{ text-align: center; font-size: 11.5px; color: {META}; }}
@@ -200,16 +224,16 @@ def ordinal(n: int) -> str:
 # ---- Fictional account ------------------------------------------------------------------------------------------
 USER, USER_INITIALS = "Daksh", "RM"
 TODAY = date(2026, 11, 2)            # demo clock: 3 days before the 5 Nov debit (T-3), so every option is still free
-SIP_DAYS = list(range(1, 29))       # 1st–28th: every month has these days (no Feb / 30-day-month gaps)
+SIP_DAYS = list(range(1, 32))       # 1st–31st (29th–31st get a short-month note in the action sheet)
 UPI_ID = "groww.amc@hdfcbank"       # demo display only
 SKIP_CUTOFF_DAYS = 2                 # Groww: a skip within 2 days of the instalment applies only from the next one
 SIPS = [
     {"id": "ppfas", "short": "PP", "name": "Parag Parikh Flexi Cap Fund", "plan": "Direct Growth",
      "cat": "Equity · Flexi Cap", "amt": 5000, "day": 5, "bank": "HDFC Bank ••4821", "invested": 60000,
-     "current": 68360, "paid": 12, "since": "Sep 2025"},
+     "current": 68360, "paid": 12, "since": "Sep 2025", "amfi": "122639"},
     {"id": "nippon", "short": "NI", "name": "Nippon India Small Cap Fund", "plan": "Direct Growth",
      "cat": "Equity · Small Cap", "amt": 5000, "day": 12, "bank": "ICICI Bank ••7730", "invested": 60000,
-     "current": 66833, "paid": 12, "since": "Nov 2025"},
+     "current": 66833, "paid": 12, "since": "Nov 2025", "amfi": "118778"},
 ]
 AA_LINK = {"bank": "HDFC Bank ••4821", "via": "Account Aggregator", "purpose": "Warn you before SIP debits that "
            "may fail", "till": "31 Mar 2027"}  # fictional consent artefact shown to the investor
@@ -338,6 +362,9 @@ TEMPLATES = {
     #   "{fails} of your last 6 debits"  -> mandate return history (Tier 1, shown as the 6-month strip)
     #   "balance was below {amt} ..."    -> Account Aggregator data (Tier 2, consent named in the source line)
     "notice_t": {"ok": True, "text": "⚡ SIP Guard: your {date} auto-debit may bounce"},
+    "strip_t": {"ok": True, "text": "⚡ SIP Guard: your {date} auto-debit may bounce"},
+    "strip_s": {"ok": True, "text": "Skip a ₹295–₹885 bank bounce charge. 1-tap, fee-free options open till "
+                                    "{cutoff}."},
     "notice_b": {"ok": True, "text": "Your upcoming {amt} debit on {date} ({bank}) may not go through: {fails} of your "
                                      "last 6 debits on this mandate didn't go through, and in {lowbal} of the last 6 "
                                      "months your balance ran below {amt} around the {day_of}. Skip a ₹295–₹885 bank "
@@ -352,11 +379,11 @@ TEMPLATES = {
                                          "missed or skipped, the fund house stops the SIP and you'd need a new "
                                          "mandate to restart."},
     "notice_fee": {"ok": True, "text": "For reference: if a debit fails, banks usually charge ₹295–₹885 incl. GST."},
-    "notice_src": {"ok": True, "text": "Why you're seeing this: your debit history on this mandate, plus {bank} "
-                                       "balance data you shared via Account Aggregator (consent till {till}). We "
-                                       "never read SMS."},
-    "notice_src_mandate": {"ok": True, "text": "Why you're seeing this: the debit history on this mandate, as "
-                                               "reported by {bank}. We never read SMS."},
+    "notice_src": {"ok": True, "text": "Why you're seeing this: debit success / failure from your mandate records "
+                                       "and the bank SMS alerts you allowed Groww to read, plus {bank} balance "
+                                       "data you shared via Account Aggregator (consent till {till})."},
+    "notice_src_mandate": {"ok": True, "text": "Why you're seeing this: debit success / failure from your "
+                                               "mandate records and the bank SMS alerts you allowed Groww to read."},
     "reminder": {"ok": True, "text": "Reminder: {amt} will be debited from {bank} on {date}. Please keep enough "
                                      "balance."},
     "reminder_hist": {"ok": True, "text": "{fails} of your last 6 debits for this SIP didn't go through. Reminder: "
@@ -364,15 +391,17 @@ TEMPLATES = {
     "o_upi": {"ok": True, "text": "⚡ Skip this month's AutoPay & pay {amt} via UPI"},
     "o_upi_d": {"ok": True, "text": "Pay {amt} from any UPI app or another bank. The {date} AutoPay debit is not sent "
                                     "to {bank}, so it can't bounce."},
-    "o_skip": {"ok": True, "text": "⏸️ Skip this month"},
-    "o_skip_d": {"ok": True, "text": "This instalment isn't sent to your bank. Your SIP stays active and resumes on "
-                                     "{after}."},
-    "o_shift": {"ok": True, "text": "📅 Move future SIP dates"},
+    "o_skip": {"ok": True, "text": "⏸️ Skip this month safely"},
+    "o_skip_d": {"ok": True, "text": "Marks this instalment skipped, so no debit is presented to your bank (₹0 fee). "
+                                     "Your SIP stays active and resumes on {after}."},
+    "o_shift": {"ok": True, "text": "📅 Move future SIP date"},
     "o_shift_d": {"ok": True, "text": "Pick a day that suits your cash flow. Applies from December."},
+    "o_shift_short": {"ok": True, "text": "Not every month has a {day}. In shorter months the fund house sets that "
+                                          "month's debit date, so check your SIP confirmation."},
     "o_shift_tip": {"ok": True, "text": "💡 Suggestion: Setting your SIP debit date 2–3 days right after your "
                                         "regular salary credit day ensures maximum account liquidity and "
                                         "uninterrupted compounding."},
-    "o_keep": {"ok": True, "text": "✅ Keep the debit as it is"},
+    "o_keep": {"ok": True, "text": "✅ Keep debit as-is"},
     "o_keep_d": {"ok": True, "text": "Nothing changes. We'll send one reminder the day before."},
     "skip_rule": {"ok": True, "text": "Note: skips count toward the AMCs' rule that 3 missed or skipped instalments "
                                       "in a row cancel a SIP ({used} of 3 used after this skip)."},
@@ -452,7 +481,8 @@ def fmt(x: str) -> str:
     return x.format(amt=inr(GUARDED["amt"]), date=dmy(GUARDED["next"]), after=dmy(GUARDED["after"]),
                     bank=GUARDED["bank"], fund=GUARDED["name"], day=ordinal(ss.shift_day),
                     t1=dmy(GUARDED["next"] - timedelta(days=1)), fails=int(xs["fails_6m"]),
-                    lowbal=int(xs["lowbal_months_6m"]), day_of=ordinal(GUARDED["day"]), till=AA_LINK["till"])
+                    lowbal=int(xs["lowbal_months_6m"]), day_of=ordinal(GUARDED["day"]), till=AA_LINK["till"],
+                    cutoff=dmy(GUARDED["next"] - timedelta(days=SKIP_CUTOFF_DAYS)))
 
 
 def tf(key: str) -> str:
@@ -508,8 +538,10 @@ model_ok = MODEL["precision"] >= PRECISION_FLOOR and MODEL["recall"] >= COVERAGE
 shown = []
 if ss.flag_on and band == "high" and ss.t0 is None and not ss.choice:
     # The balance claim is only allowed when AA data backs it; otherwise the mandate-only wording is used.
-    shown += (["notice_t", "notice_b", "notice_hist", "notice_stake", "notice_fee", "notice_src"] if ss.aa_consent
-              else ["notice_t", "notice_b_mandate", "notice_hist", "notice_stake", "notice_fee", "notice_src_mandate"])
+    shown += (["strip_t", "strip_s", "notice_b", "notice_hist", "notice_stake", "notice_fee", "notice_src"]
+              if ss.aa_consent else
+              ["strip_t", "strip_s", "notice_b_mandate", "notice_hist", "notice_stake", "notice_fee",
+               "notice_src_mandate"])
     if ss.rogue:
         shown.append("rogue")
 on_screen = " ".join(TEMPLATES[k]["text"] for k in shown)
@@ -634,7 +666,23 @@ def demo_qr_svg(size: int = 196) -> str:
             f'<path d="M{m - 16} {m} a16 16 0 0 0 32 0 z" fill="#5367FF"/></svg>')
 
 
-@st.dialog("Handle your 5 Nov debit")
+def guard_breakdown() -> None:
+    """Full SIP Guard evidence, shown inside the resolution drawer (not on the fund card)."""
+    g = GUARDED
+    body_key, src_key = (("notice_b", "notice_src") if ss.aa_consent else ("notice_b_mandate", "notice_src_mandate"))
+    hist = "".join(f'<div class="{"y" if ok else "n"}"><i>{"✓" if ok else "✕"}</i>{m}</div>' for m, ok in hist_live)
+    st.markdown(
+        f'<div class="guard"><div class="b" style="margin-top:0">{esc(tf(body_key))}</div>'
+        f'<div class="sub" style="margin-top:10px;font-weight:600;color:{NAVY}">{esc(tf("notice_hist"))}</div>'
+        f'<div class="hist">{hist}</div>'
+        f'<div class="stake"><div><div class="k">Instalments paid</div><div class="v">{g["paid"]} since '
+        f'{esc(g["since"])}</div></div><div><div class="k">Invested</div><div class="v">{inr(g["invested"])}</div>'
+        f'</div><div><div class="k">Current value</div><div class="v up">{inr(g["current"])}</div></div></div>'
+        f'<div class="fee">{esc(tf("notice_stake"))}</div><div class="fee">{esc(tf("notice_fee"))}</div>'
+        f'<div class="src">🔒 {esc(tf(src_key))}</div></div>', unsafe_allow_html=True)
+
+
+@st.dialog("Handle your 5 Nov debit", width="large")
 def action_sheet() -> None:
     g = GUARDED
     if ss.get("upi_step"):                                       # ---- in-dialog UPI payment screen ----
@@ -656,9 +704,12 @@ def action_sheet() -> None:
             st.rerun(scope="fragment")
         return
 
-    st.markdown(f'<div class="sub">{esc(g["name"])} · {inr(g["amt"])} · {dmy(g["next"])} · {esc(g["bank"])}. '
-                f'All four options are free because it is more than {SKIP_CUTOFF_DAYS} days before the debit.</div>',
+    st.markdown(f'<div class="sub">{esc(g["name"])} · {inr(g["amt"])} · {dmy(g["next"])} · {esc(g["bank"])}</div>',
                 unsafe_allow_html=True)
+    guard_breakdown()
+    st.markdown(f'<div style="font-weight:700;font-size:15px;color:{NAVY};margin:14px 0 2px 0">Choose an option'
+                f'</div><div class="sub">All four are free because it is more than {SKIP_CUTOFF_DAYS} days before '
+                f'the debit.</div>', unsafe_allow_html=True)
     st.write("")
     if st.button(tf("o_upi"), type="primary", use_container_width=True, key="d_upi"):
         ss.upi_step = True
@@ -676,11 +727,117 @@ def action_sheet() -> None:
                  key="d_shift"):
         choose("shift")
         st.rerun()
-    st.caption(t("o_shift_d") + "  \n" + t("o_shift_tip"))
+    st.caption(t("o_shift_d") + "  \n" + t("o_shift_tip")
+               + ("  \n" + tf("o_shift_short") if ss.shift_day > 28 else ""))
     if st.button(t("o_keep"), use_container_width=True, key="d_keep"):
         choose("keep")
         st.rerun()
     st.caption(t("o_keep_d"))
+
+
+# =================================================================================================================
+# FUND PERFORMANCE · real AMFI NAVs (api.mfapi.in), Groww-style chart
+# =================================================================================================================
+TENURES = {"1M": 30, "6M": 182, "1Y": 365, "3Y": 1095, "All": None}
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def nav_history(amfi_code: str) -> pd.DataFrame | None:
+    """Daily NAV history from the public AMFI feed. Returns None if it can't be reached (no fake fallback)."""
+    try:
+        req = urllib.request.Request(f"https://api.mfapi.in/mf/{amfi_code}", headers={"User-Agent": "sip-guard-demo"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            data = json.load(r)["data"]
+        df = pd.DataFrame(data)
+        df["date"] = pd.to_datetime(df["date"], format="%d-%m-%Y")
+        df["nav"] = pd.to_numeric(df["nav"], errors="coerce")
+        df = df.dropna().sort_values("date").reset_index(drop=True)
+        return df if len(df) > 2 else None
+    except Exception:
+        return None
+
+
+def window(df: pd.DataFrame, tenure: str) -> pd.DataFrame:
+    days = TENURES[tenure]
+    if days is None:
+        return df
+    start = df["date"].iloc[-1] - pd.Timedelta(days=days)
+    i = max(int(df["date"].searchsorted(start)) - 1, 0)       # last NAV on or before the start date
+    return df.iloc[i:]
+
+
+def tenure_return(w: pd.DataFrame, tenure: str) -> tuple[float, str]:
+    """Groww convention: ≤ 1Y absolute, > 1Y annualised (CAGR)."""
+    first, last = w["nav"].iloc[0], w["nav"].iloc[-1]
+    days = max((w["date"].iloc[-1] - w["date"].iloc[0]).days, 1)
+    if days > 366:
+        return (last / first) ** (365.25 / days) - 1, f"{tenure} annualised"
+    return last / first - 1, f"{tenure} return"
+
+
+def pills(label: str, options: list[str], key: str, default: str) -> str:
+    """Groww-style pill selector (st.segmented_control, Streamlit ≥ 1.40; radio fallback)."""
+    ss.setdefault(key, default)
+    ss.setdefault(key + "_last", default)
+
+    def keep_one() -> None:                                    # clicking the active pill would deselect it
+        if ss.get(key) is None:
+            ss[key] = ss[key + "_last"]
+        else:
+            ss[key + "_last"] = ss[key]
+
+    if hasattr(st, "segmented_control"):
+        v = st.segmented_control(label, options, key=key, on_change=keep_one, label_visibility="collapsed")
+    else:
+        v = st.radio(label, options, key=key, on_change=keep_one, horizontal=True, label_visibility="collapsed")
+    return v or ss[key + "_last"]
+
+
+def nav_chart(w: pd.DataFrame) -> go.Figure:
+    lo, hi = float(w["nav"].min()), float(w["nav"].max())
+    pad = (hi - lo) * 0.08 or hi * 0.02
+    fig = go.Figure(go.Scatter(
+        x=w["date"], y=w["nav"], mode="lines", line=dict(color=MINT, width=2.2, shape="spline", smoothing=0.3),
+        fill="tozeroy", fillcolor="rgba(0, 208, 156, 0.08)",
+        hovertemplate="<b>₹%{y:,.2f}</b><br>%{x|%d %b %Y}<extra></extra>"))
+    fig.update_layout(
+        height=260, margin=dict(l=0, r=0, t=6, b=0), paper_bgcolor=WHITE, plot_bgcolor=WHITE, showlegend=False,
+        hovermode="x", dragmode=False, font=dict(family="Inter, sans-serif", color=META, size=11),
+        hoverlabel=dict(bgcolor=WHITE, bordercolor=MINT, font=dict(color=NAVY, size=12, family="Inter, sans-serif")))
+    fig.update_xaxes(showgrid=False, showline=False, zeroline=False, ticks="", nticks=5, tickformat="%b '%y",
+                     showspikes=True, spikemode="across", spikesnap="cursor", spikecolor="#CBD5E1",
+                     spikethickness=1, spikedash="solid")
+    fig.update_yaxes(showgrid=True, gridcolor="#F1F5F9", showline=False, zeroline=False, ticks="", side="right",
+                     tickprefix="₹", nticks=4, range=[lo - pad, hi + pad], fixedrange=True)
+    return fig
+
+
+def fund_performance() -> None:
+    with keyed("fund_chart"):
+        st.markdown('<div class="h3">Fund performance</div>', unsafe_allow_html=True)
+        names = {s["name"]: s for s in SIPS}
+        fund = names[pills("Fund", list(names), "perf_fund", SIPS[0]["name"])]
+        df = nav_history(fund["amfi"])
+        if df is None:
+            st.markdown('<div class="info" style="margin-top:10px">Live NAV data for this fund couldn\'t be loaded '
+                        'right now (AMFI feed via api.mfapi.in). Nothing is shown rather than made-up numbers; '
+                        'refresh in a minute.</div>', unsafe_allow_html=True)
+            return
+        tenure = ss.get("perf_tenure") or ss.get("perf_tenure_last") or "3Y"
+        w = window(df, tenure)
+        r, r_lbl = tenure_return(w, tenure)
+        d1 = df["nav"].iloc[-1] / df["nav"].iloc[-2] - 1
+        cls = lambda v: "pos" if v >= 0 else "neg"                 # noqa: E731
+        st.markdown(
+            f'<div class="perf" style="margin-top:8px"><span class="ret {cls(r)}">{r:+.2%}</span>'
+            f'<span class="lbl">{r_lbl}</span><span class="d1 {cls(d1)}">{d1:+.2%} 1D</span></div>'
+            f'<div class="sub">NAV ₹{df["nav"].iloc[-1]:,.2f} · {df["date"].iloc[-1]:%d %b %Y} · '
+            f'{esc(fund["plan"])}</div>', unsafe_allow_html=True)
+        st.plotly_chart(nav_chart(w), use_container_width=True, key=f"chart_{fund['id']}",
+                        config={"displayModeBar": False, "scrollZoom": False})
+        pills("Tenure", list(TENURES), "perf_tenure", "3Y")
+        st.caption("NAV source: AMFI via api.mfapi.in (Direct Growth). Past performance is not indicative of future "
+                   "returns. Shown for context only, not a recommendation.")
 
 
 with main:
@@ -713,25 +870,15 @@ with main:
 
         if ss.t0 is None:                                           # ---- before debit day ----
             if guard_on and not ss.choice:
-                body_key, src_key = (("notice_b", "notice_src") if ss.aa_consent
-                                     else ("notice_b_mandate", "notice_src_mandate"))
-                hist = "".join(f'<div class="{"y" if ok else "n"}"><i>{"✓" if ok else "✕"}</i>{m}</div>'
-                               for m, ok in hist_live)
-                st.markdown(
-                    f'<div class="guard"><div class="t">{esc(tf("notice_t"))}</div>'
-                    f'<div class="b">{esc(tf(body_key))}</div>'
-                    f'<div class="sub" style="margin-top:10px;font-weight:600;color:{NAVY}">{esc(tf("notice_hist"))}'
-                    f'</div><div class="hist">{hist}</div>'
-                    f'<div class="stake"><div><div class="k">Instalments paid</div><div class="v">{g["paid"]} since '
-                    f'{esc(g["since"])}</div></div><div><div class="k">Invested</div><div class="v">'
-                    f'{inr(g["invested"])}</div></div><div><div class="k">Current value</div><div class="v up">'
-                    f'{inr(g["current"])}</div></div></div>'
-                    f'<div class="fee">{esc(tf("notice_stake"))}</div>'
-                    f'<div class="fee">{esc(tf("notice_fee"))}</div>'
-                    + (f'<div class="b" style="color:#B91C1C">{esc(t("rogue"))}</div>' if "rogue" in shown else "")
-                    + f'<div class="src">🔒 {esc(tf(src_key))}</div></div>', unsafe_allow_html=True)
-                if st.button("Resolve debit risk · View options", type="primary", use_container_width=True, key="resolve"):
-                    action_sheet()
+                with keyed("guard_strip"):
+                    c_l, c_r = st.columns([3.1, 1.25], vertical_alignment="center")
+                    with c_l:
+                        st.markdown(f'<div class="gt">{esc(tf("strip_t"))}</div><div class="gs">{esc(tf("strip_s"))}'
+                                    '</div>' + (f'<div class="gs" style="color:#B91C1C">{esc(t("rogue"))}</div>'
+                                                if "rogue" in shown else ""), unsafe_allow_html=True)
+                    with c_r:
+                        if st.button("Resolve in 1-Tap", type="primary", use_container_width=True, key="resolve"):
+                            action_sheet()
                 st.markdown(tracker([(f"Notified {dmy(TODAY)}", "done"), choice_step(),
                                      (f"Debit day {dmy(g['next'])}", ""), ("Units allotted", "")]),
                             unsafe_allow_html=True)
@@ -807,6 +954,9 @@ with main:
             f'<div><div class="k">AutoPay</div><div class="v">{esc(n["bank"])}</div></div></div>',
             unsafe_allow_html=True)
 
+    # ---- Fund performance (real NAVs) ----
+    fund_performance()
+
     # ---- Holdings ----
     rows = "".join(
         f'<div style="display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-top:1px solid {BORDER}">'
@@ -835,11 +985,11 @@ with side:
             + "".join(f'{esc(s["bank"])} · {esc(s["name"].split(" Fund")[0])} · {ordinal(s["day"])}<br>' for s in SIPS)
             + '</div></div>'
             + f'<div class="card"><h3>🔒 Data SIP Guard uses</h3><div class="sub" style="font-size:13px;line-height:1.7">'
-              f'<b style="color:{NAVY}">Debit history</b> · success / failure of each AutoPay debit, as your bank '
-              f'reports it to Groww.<br><b style="color:{NAVY}">Account Aggregator</b> · '
+              f'<b style="color:{NAVY}">Debit history</b> · success / failure of each AutoPay debit, as retrieved '
+              f'from SMS access from your phone to Groww.<br><b style="color:{NAVY}">Account Aggregator</b> · '
             + (f'{esc(AA_LINK["bank"])} linked for “{esc(AA_LINK["purpose"])}”, consent till {AA_LINK["till"]}. '
                f'Revoke any time.' if ss.aa_consent else 'Not linked. SIP Guard uses debit history only.')
-            + '<br>Never used: SMS, contacts, or data for loans or ads.</div></div>', unsafe_allow_html=True)
+            + '<br>Never used: contacts, or data for loans or ads.</div></div>', unsafe_allow_html=True)
     else:
         with keyed("evaluator"):
             st.markdown('<div class="h3">🔍 Evaluator telemetry</div><div class="sub">Inspect the AI eval-gate '
@@ -873,18 +1023,18 @@ with side:
                     f'synthetic debits; base failure rate {MODEL["base_rate"]:.0%}. Backtest at the 60% threshold: '
                     f'precision {MODEL["precision"]:.1%}, recall {MODEL["recall"]:.1%}, {MODEL["alerts"]:,} notices. '
                     f'Inputs now: {"mandate debit history + Account Aggregator balance and spending" if ss.aa_consent else "mandate debit history only (AA consent off)"}. '
-                    f'Never SMS.</div>', unsafe_allow_html=True)
+                    f'Debit SMS alerts are read only with SMS permission.</div>', unsafe_allow_html=True)
 
             with tab_t:
                 st.markdown(
                     "**How does Groww know the balance was low?** Only from data it is entitled to use:\n\n"
                     "| Tier | Source | Consent | What the notice may say |\n| --- | --- | --- | --- |\n"
-                    "| 1 · Mandate history | NACH / UPI AutoPay return codes (e.g. *insufficient funds*) "
-                    "that Groww already receives | None extra: part of running the SIP | "
+                    "| 1 · Debit history | NACH / UPI AutoPay return codes (e.g. *insufficient funds*) "
+                    "plus bank debit SMS alerts | SMS permission on the phone (mandate records need none) | "
                     "“2 of your last 6 debits didn't go through” |\n"
                     "| 2 · Account Aggregator | Bank statement via an RBI-licensed AA | Explicit, purpose-bound "
                     "(“warn you before SIP debits”), revocable | “…and your balance was below ₹5,000 around the 5th” |\n"
-                    "| Never | SMS, contacts, data collected for loans | — | — |")
+                    "| Never | Contacts, data collected for loans | — | — |")
                 a, m = MODELS["aa"], MODELS["mandate"]
                 st.markdown(
                     "**Why Tier 2 is worth asking for** (same synthetic data, same 60% threshold):\n\n"
