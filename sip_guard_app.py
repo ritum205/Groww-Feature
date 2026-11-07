@@ -245,7 +245,7 @@ def ordinal(n: int) -> str:
 
 
 # ---- Fictional account ------------------------------------------------------------------------------------------
-USER, USER_INITIALS = "Daksh", "RM"
+USER, USER_INITIALS = "Daksh", "DM"
 TODAY = date(2026, 11, 2)            # demo clock: 3 days before the 5 Nov debit (T-3), so every option is still free
 SIP_DAYS = list(range(1, 32))       # 1st–31st (29th–31st get a short-month note in the action sheet)
 DEBIT_TEST_NOTE = ("Test execution outcome: verifies whether AutoPay passes, bounces with a ₹295–₹885 bank "
